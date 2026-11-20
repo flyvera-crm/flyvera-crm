@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# supabase (local CLI working folders — never commit; credentials live in .env* which is already ignored)
+supabase/.temp/
+supabase/.branches/

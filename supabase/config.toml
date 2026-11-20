@@ -1,0 +1,29 @@
+# Supabase CLI configuration for LOCAL development only.
+# No credentials belong in this file. Production keys live in the Supabase
+# dashboard and in an untracked .env.local (never committed).
+#
+# `supabase start` / `supabase db reset` (requires the Supabase CLI + Docker)
+# applies supabase/migrations/* and then loads the development seed below.
+# The CLI fills in defaults for anything not listed here.
+
+project_id = "flyvera-crm"
+
+[api]
+# Only the `public` schema is exposed through the API. NEVER add `private`.
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+
+[db]
+major_version = 17
+
+[db.seed]
+# Development data only — loaded for local databases, never for production.
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[auth]
+# FLYVERA is invitation-only: no public sign-up page.
+enable_signup = false
+
+[auth.email]
+enable_signup = false
