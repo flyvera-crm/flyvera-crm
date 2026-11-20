@@ -1,0 +1,255 @@
+"use client";
+
+// Dialogs shared by the booking page and the Payments page.
+import { useState, type FormEvent } from "react";
+import type { Booking, PaymentMethod } from "@/types/crm";
+import {
+  bookingMoney,
+  CANCEL_REASONS,
+  PAYMENT_METHODS,
+  validatePayment,
+  validateRefund,
+  type PaymentFormValues,
+} from "@/lib/booking-rules";
+import { Modal } from "@/components/ui/Modal";
+import { Field, fieldA11y, inputClass } from "@/components/ui/form";
+import { Icon } from "@/components/icons";
+import { cn, formatMoney } from "@/lib/format";
+
+export function RecordPaymentModal({
+  booking,
+  today,
+  onClose,
+  onSave,
+}: {
+  booking: Booking;
+  today: string;
+  onClose: () => void;
+  onSave: (v: PaymentFormValues) => void;
+}) {
+  const { balance, paid } = bookingMoney(booking);
+  const [v, setV] = useState<PaymentFormValues>({
+    amount: String(balance),
+    date: today,
+    method: "Card",
+    note: paid === 0 ? "Deposit" : "",
+  });
+  const [submitted, setSubmitted] = useState(false);
+  const errors = validatePayment(v, booking, today);
+  const err = (f: keyof PaymentFormValues) => (submitted ? errors[f] : undefined);
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    setSubmitted(true);
+    if (Object.keys(errors).length) return;
+    onSave(v);
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Record payment"
+      description={
+        <>
+          {booking.id} · balance due <span className="font-semibold text-navy-900">{formatMoney(balance)}</span>
+        </>
+      }
+      footer={
+        <>
+          <button onClick={onClose} className="rounded-xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50">
+            Cancel
+          </button>
+          <button type="submit" form="payment-form" className="rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
+            Save payment
+          </button>
+        </>
+      }
+    >
+      <form id="payment-form" onSubmit={submit} noValidate className="grid grid-cols-2 gap-4">
+        <Field id="amount" label="Amount (USD)" required error={err("amount")} className="col-span-2 sm:col-span-1">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-navy-400">$</span>
+            <input
+              {...fieldA11y("amount", { error: err("amount") })}
+              value={v.amount}
+              onChange={(e) => setV({ ...v, amount: e.target.value })}
+              inputMode="decimal"
+              className={inputClass(!!err("amount"), "h-11 pl-7")}
+            />
+          </div>
+        </Field>
+        <Field id="date" label="Date received" required error={err("date")} className="col-span-2 sm:col-span-1">
+          <input
+            {...fieldA11y("date", { error: err("date") })}
+            type="date"
+            max={today}
+            value={v.date}
+            onChange={(e) => setV({ ...v, date: e.target.value })}
+            className={inputClass(!!err("date"))}
+          />
+        </Field>
+        <fieldset className="col-span-2">
+          <legend className="mb-1.5 text-sm font-medium text-navy-700">Method</legend>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {PAYMENT_METHODS.map((pm) => (
+              <label
+                key={pm}
+                className={cn(
+                  "flex h-10 cursor-pointer items-center justify-center rounded-xl border text-sm font-medium transition has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-sky-brand/20",
+                  v.method === pm ? "border-navy-900 bg-navy-900 text-white" : "border-navy-100 text-navy-600 hover:bg-navy-50",
+                )}
+              >
+                <input type="radio" name="method" value={pm} checked={v.method === pm} onChange={() => setV({ ...v, method: pm as PaymentMethod })} className="sr-only" />
+                {pm}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <Field id="note" label="Note" error={err("note")} className="col-span-2">
+          <input
+            {...fieldA11y("note", { error: err("note") })}
+            value={v.note}
+            onChange={(e) => setV({ ...v, note: e.target.value })}
+            placeholder="e.g. Deposit, balance, receipt number…"
+            className={inputClass(!!err("note"))}
+          />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+export function CancelModal({ open, booking, onClose, onConfirm }: { open: boolean; booking: Booking; onClose: () => void; onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState(CANCEL_REASONS[0]);
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Cancel this booking?"
+      description={
+        <>
+          <span className="font-semibold text-navy-900">{booking.title}</span> for {booking.customerName}. Remember to cancel with each supplier too.
+        </>
+      }
+      footer={
+        <>
+          <button onClick={onClose} className="rounded-xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50">
+            Keep booking
+          </button>
+          <button onClick={() => onConfirm(reason)} className="rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-rose-700">
+            Cancel booking
+          </button>
+        </>
+      }
+    >
+      <label htmlFor="cancelReason" className="mb-1.5 block text-sm font-medium text-navy-700">
+        Reason
+      </label>
+      <div className="relative">
+        <select id="cancelReason" value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass(false, "h-11 appearance-none pr-9")}>
+          {CANCEL_REASONS.map((r) => (
+            <option key={r}>{r}</option>
+          ))}
+        </select>
+        <Icon name="chevronDown" size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-navy-400" />
+      </div>
+    </Modal>
+  );
+}
+
+
+export type RefundFormValues = { amount: string; date: string; method: PaymentMethod; note: string };
+
+/** Money going back to the customer after a cancellation. */
+export function RefundModal({
+  booking,
+  today,
+  onClose,
+  onSave,
+}: {
+  booking: Booking;
+  today: string;
+  onClose: () => void;
+  onSave: (v: RefundFormValues) => void;
+}) {
+  const { paid } = bookingMoney(booking);
+  const [v, setV] = useState<RefundFormValues>({ amount: String(paid), date: today, method: "Bank transfer", note: "" });
+  const [submitted, setSubmitted] = useState(false);
+  const errors = validateRefund(v, booking, today);
+  const err = (f: "amount" | "date") => (submitted ? errors[f] : undefined);
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    setSubmitted(true);
+    if (Object.keys(errors).length) return;
+    onSave(v);
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Record refund"
+      description={
+        <>
+          {booking.id} · {booking.customerName} has paid <span className="font-semibold text-navy-900">{formatMoney(paid)}</span>. Refund
+          all of it, or part (the rest is kept as a cancellation fee).
+        </>
+      }
+      footer={
+        <>
+          <button onClick={onClose} className="rounded-xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50">
+            Cancel
+          </button>
+          <button type="submit" form="refund-form" className="rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
+            Save refund
+          </button>
+        </>
+      }
+    >
+      <form id="refund-form" onSubmit={submit} noValidate className="grid grid-cols-2 gap-4">
+        <Field id="refundAmount" label="Amount refunded (USD)" required error={err("amount")} className="col-span-2 sm:col-span-1">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-navy-400">$</span>
+            <input
+              {...fieldA11y("refundAmount", { error: err("amount") })}
+              value={v.amount}
+              onChange={(e) => setV({ ...v, amount: e.target.value })}
+              inputMode="decimal"
+              className={inputClass(!!err("amount"), "h-11 pl-7")}
+            />
+          </div>
+        </Field>
+        <Field id="refundDate" label="Date refunded" required error={err("date")} className="col-span-2 sm:col-span-1">
+          <input
+            {...fieldA11y("refundDate", { error: err("date") })}
+            type="date"
+            max={today}
+            value={v.date}
+            onChange={(e) => setV({ ...v, date: e.target.value })}
+            className={inputClass(!!err("date"))}
+          />
+        </Field>
+        <Field id="refundMethod" label="Refunded by" required className="col-span-2 sm:col-span-1">
+          <div className="relative">
+            <select
+              id="refundMethod"
+              value={v.method}
+              onChange={(e) => setV({ ...v, method: e.target.value as PaymentMethod })}
+              className={inputClass(false, "h-11 appearance-none pr-9")}
+            >
+              {PAYMENT_METHODS.map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </select>
+            <Icon name="chevronDown" size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-navy-400" />
+          </div>
+        </Field>
+        <Field id="refundNote" label="Note" className="col-span-2 sm:col-span-1">
+          <input id="refundNote" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} placeholder="e.g. Minus $50 admin fee" className={inputClass(false)} />
+        </Field>
+      </form>
+    </Modal>
+  );
+}

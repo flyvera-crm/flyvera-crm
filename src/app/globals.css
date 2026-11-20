@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+/*
+ * FLYVERA brand tokens
+ * Navy = primary surfaces & text, Sky = interactive/accent, Gold = premium highlights.
+ * Use them in classes like: bg-navy-900, text-sky-brand, border-gold-400 …
+ */
+@theme {
+  --color-navy-50: #eef3fa;
+  --color-navy-100: #d6e1f0;
+  --color-navy-200: #aec3e0;
+  --color-navy-300: #7f9dc8;
+  --color-navy-400: #5376ab;
+  --color-navy-500: #36598f;
+  --color-navy-600: #264673;
+  --color-navy-700: #1b3a63;
+  --color-navy-800: #122c4f;
+  --color-navy-900: #0b1f3a;
+  --color-navy-950: #061428;
+
+  --color-sky-brand: #0ea5e9;
+  --color-sky-brand-dark: #0284c7;
+  --color-sky-brand-light: #e0f2fe;
+
+  --color-gold-50: #fbf6e6;
+  --color-gold-100: #f5e9c2;
+  --color-gold-300: #e3c766;
+  --color-gold-400: #d4b244;
+  --color-gold-500: #c9a227;
+  --color-gold-600: #a8851a;
+  --color-gold-700: #7f6413;
+
+  --color-canvas: #f5f7fb;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-navy-900);
+}
+
+/* Thin, subtle scrollbars inside the sidebar and tables */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.15) transparent;
+}
+
+/* Printing (e.g. a quotation → "Save as PDF"): white page, keep brand colours. */
+@media print {
+  body {
+    background: white;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  @page {
+    margin: 12mm;
+  }
+}

@@ -1,0 +1,189 @@
+// Shared domain types. When real APIs are added later, API responses
+// should be mapped into these shapes so the UI doesn't need to change.
+
+// Booking lifecycle: Pending (awaiting deposit) → Confirmed → Ticketed (documents issued) → Completed (travelled)
+export type BookingStatus = "Pending" | "Confirmed" | "Ticketed" | "Completed" | "Cancelled";
+export type LeadStage = "New" | "Contacted" | "Quoted" | "Negotiation" | "Won" | "Lost";
+export type LeadSource = "WhatsApp" | "Website" | "Referral" | "Instagram" | "Phone" | "Walk-in";
+export type LeadPriority = "Hot" | "Warm" | "Cold";
+export type TripType = "Holiday" | "Honeymoon" | "Family" | "Business" | "Umrah" | "Group";
+
+export type Lead = {
+  id: string; // e.g. "LD-2041"
+  name: string;
+  phone: string;
+  email?: string;
+  source: LeadSource;
+  stage: LeadStage;
+  priority: LeadPriority;
+  destination: string;
+  tripType: TripType;
+  departDate?: string; // ISO
+  returnDate?: string; // ISO
+  travellers: number;
+  budget: number; // estimated trip value
+  agent: string;
+  created: string; // ISO
+  lastContact: string; // ISO
+  nextFollowUp?: string; // ISO
+  notes?: string;
+  lostReason?: string;
+  customerId?: string; // set once converted to a customer
+};
+export type FlightStatus = "On time" | "Delayed" | "Boarding" | "Scheduled";
+
+export type Kpi = {
+  label: string;
+  value: number;
+  format: "currency" | "number" | "percent";
+  delta: number; // % change vs previous period
+  period: string;
+  icon: "wallet" | "calendar" | "target" | "users";
+  trend: number[];
+};
+
+export type PaymentMethod = "Card" | "Bank transfer" | "Cash" | "Other";
+
+export type BookingPayment = {
+  id: string; // "p1", "p2"…
+  date: string; // ISO
+  amount: number; // always positive; refunds are marked with kind
+  method: PaymentMethod;
+  note?: string;
+  kind?: "payment" | "refund"; // default "payment"
+};
+
+/** A booked service = a quotation line + the supplier's reference once confirmed. */
+export type BookingService = QuoteItem & {
+  ref?: string; // airline PNR, hotel confirmation number, etc.
+  supplierPaidOn?: string; // ISO date the agency paid the supplier for this service
+};
+
+export type BookingEvent = { date: string; text: string };
+
+export type Booking = {
+  id: string; // e.g. "FV-10481"
+  customerId: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail?: string;
+  quoteId?: string; // the accepted quotation it came from
+  title: string;
+  destination: string;
+  departDate: string;
+  returnDate?: string;
+  adults: number;
+  children: number;
+  services: BookingService[];
+  discount: number;
+  taxRate: number;
+  status: BookingStatus;
+  payments: BookingPayment[];
+  depositDue: string; // ISO
+  balanceDue: string; // ISO — full payment needed by this date
+  agent: string;
+  created: string;
+  updated: string;
+  cancelReason?: string;
+  refundSettled?: boolean; // cancelled: money kept as a fee (no further refund due)
+  history: BookingEvent[]; // newest last
+};
+
+export type Flight = {
+  id: string;
+  flightNo: string;
+  airline: string;
+  from: string;
+  to: string;
+  departure: string;
+  passenger: string;
+  pax: number;
+  status: FlightStatus;
+};
+
+export type Activity = {
+  id: string;
+  who: string;
+  action: string;
+  target: string;
+  time: string;
+  kind: "lead" | "payment" | "booking" | "whatsapp" | "ticket";
+};
+
+export type CustomerTier = "Platinum" | "Gold" | "Silver" | "Standard";
+export type CustomerStatus = "Active" | "Travelling" | "Inactive";
+export type ContactMethod = "WhatsApp" | "Email" | "Phone";
+export type SeatPreference = "No preference" | "Window" | "Aisle" | "Extra legroom";
+
+export type Customer = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+  country: string;
+  tier: CustomerTier;
+  status: CustomerStatus;
+  trips: number;
+  lifetimeValue: number;
+  lastTrip: string | null; // ISO date (YYYY-MM-DD)
+  favouriteDestination: string;
+  agent: string;
+  joined: string; // ISO date
+  // Optional profile details (captured by the Add customer form)
+  dateOfBirth?: string; // ISO date
+  nationality?: string;
+  passportNumber?: string;
+  passportExpiry?: string; // ISO date
+  preferredContact?: ContactMethod;
+  seatPreference?: SeatPreference;
+  whatsappOptIn?: boolean;
+  notes?: string;
+};
+
+export type QuoteStatus = "Draft" | "Sent" | "Accepted" | "Declined";
+/** What the UI shows: a Sent quote past its validity date is displayed as "Expired". */
+export type QuoteDisplayStatus = QuoteStatus | "Expired";
+export type QuoteItemType = "Flight" | "Hotel" | "Transfer" | "Activity" | "Insurance" | "Visa" | "Other";
+
+export type QuoteItem = {
+  id: string;
+  type: QuoteItemType;
+  description: string;
+  quantity: number;
+  unitPrice: number; // selling price per unit (what the customer pays)
+  cost: number; // total supplier cost for this line (internal only)
+};
+
+export type QuoteRecipient = {
+  kind: "customer" | "lead";
+  id: string; // CU-… or LD-…
+  name: string;
+  email?: string;
+  phone: string;
+};
+
+export type Quotation = {
+  id: string; // e.g. "QT-3002"
+  recipient: QuoteRecipient; // snapshot at the time of quoting
+  title: string;
+  destination: string;
+  departDate?: string;
+  returnDate?: string;
+  adults: number;
+  children: number;
+  items: QuoteItem[];
+  discount: number; // amount off the subtotal
+  taxRate: number; // percent
+  validUntil: string;
+  status: QuoteStatus;
+  notes?: string; // shown on the quotation
+  agent: string;
+  created: string;
+  updated: string;
+  sentAt?: string;
+  respondedAt?: string;
+};
+
+export type MonthlyRevenue = { month: string; revenue: number };
+export type LabeledValue = { label: string; value: number };

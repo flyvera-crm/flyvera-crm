@@ -1,0 +1,622 @@
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
+import type { Customer, CustomerStatus, CustomerTier } from "@/types/crm";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import { Icon, type IconName } from "@/components/icons";
+import { cn, formatCurrency, formatDate, formatMoney, formatMonthYear, initials } from "@/lib/format";
+import { addDays, getCustomerTrips, MAX_TRIPS_SHOWN, type Trip, type TripStatus } from "@/lib/customer-history";
+import { compactPhone } from "@/lib/customer-validation";
+import { todayIso, useCustomers } from "./CustomersProvider";
+import { displayStatus, useQuotations } from "@/lib/quote-store";
+import { quoteTotals } from "@/lib/quote-math";
+import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
+import { useBookings } from "@/lib/booking-store";
+import { bookingMoney } from "@/lib/booking-rules";
+import { BookingStatusBadge, PaymentBadge, TimingChip } from "@/components/bookings/booking-ui";
+
+const tierTone: Record<CustomerTier, BadgeTone> = { Platinum: "premium", Gold: "gold", Silver: "neutral", Standard: "info" };
+const statusTone: Record<CustomerStatus, BadgeTone> = { Active: "success", Travelling: "info", Inactive: "neutral" };
+const tripTone: Record<TripStatus, BadgeTone> = { "In progress": "info", Completed: "success", Cancelled: "danger" };
+
+function yearsBetween(fromIso: string, toIso: string) {
+  const [fy, fm, fd] = fromIso.split("-").map(Number);
+  const [ty, tm, td] = toIso.split("-").map(Number);
+  return ty - fy - (tm < fm || (tm === fm && td < fd) ? 1 : 0);
+}
+
+export function CustomerProfile({ id }: { id: string }) {
+  const { getCustomer, hydrated, addedIds, openEditForm } = useCustomers();
+  const customer = getCustomer(id);
+
+  // Customers you added only exist in this browser, so wait for it before saying "not found".
+  if (!customer) return hydrated ? <NotFound id={id} /> : <ProfileSkeleton />;
+
+  // Date-based labels (age, passport status) use the visitor's own "today", so only after hydration.
+  const today = hydrated ? todayIso() : null;
+
+  return (
+    <div className="space-y-6">
+      <Link href="/customers" className="inline-flex items-center gap-1.5 text-sm font-medium text-navy-500 hover:text-navy-900">
+        <Icon name="arrowRight" size={16} className="rotate-180" /> All customers
+      </Link>
+
+      <ProfileHeader customer={customer} isNew={addedIds.has(customer.id)} onEdit={() => openEditForm(customer)} />
+      <ProfileStats customer={customer} />
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="space-y-6">
+          <ContactCard customer={customer} today={today} />
+          <PassportCard customer={customer} today={today} onEdit={() => openEditForm(customer)} />
+          <PreferencesCard customer={customer} />
+        </div>
+        <div className="space-y-6 lg:col-span-2">
+          <NotesCard customer={customer} onEdit={() => openEditForm(customer)} />
+          <BookingsCard customer={customer} today={today} />
+          <QuotesCard customer={customer} today={today} />
+          <TripsCard customer={customer} />
+          <ActivityCard customer={customer} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Header ─────────────────────────── */
+
+function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isNew: boolean; onEdit: () => void }) {
+  const phoneDigits = compactPhone(c.phone).replace("+", "");
+  return (
+    <section className="relative overflow-hidden rounded-3xl bg-navy-900 p-5 text-white sm:p-7">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_120%_at_100%_0%,rgba(14,165,233,0.3),transparent_60%)]" />
+      <div className="pointer-events-none absolute -bottom-28 -right-16 size-72 rounded-full border border-gold-500/15" />
+
+      <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center gap-4 sm:gap-5">
+          <span
+            className={cn(
+              "grid size-16 shrink-0 place-items-center rounded-2xl text-xl font-bold sm:size-20 sm:text-2xl",
+              c.tier === "Platinum"
+                ? "bg-gradient-to-br from-gold-300 to-gold-600 text-navy-950"
+                : "bg-white/10 text-white ring-1 ring-white/20",
+            )}
+          >
+            {initials(c.name)}
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{c.name}</h1>
+              {isNew && (
+                <span className="rounded-md bg-gold-500 px-1.5 py-px text-[10px] font-bold uppercase tracking-wide text-navy-950">
+                  New
+                </span>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Badge tone={c.tier === "Platinum" ? "gold" : tierTone[c.tier]}>
+                {c.tier === "Platinum" && <Icon name="crown" size={12} />}
+                {c.tier}
+              </Badge>
+              <Badge tone={statusTone[c.status]}>{c.status}</Badge>
+            </div>
+            {/* each piece stays on one line; the row wraps between pieces */}
+            <p className="mt-2 flex flex-wrap gap-x-1.5 text-sm text-navy-200">
+              <span className="font-mono text-white">{c.id}</span>
+              <span aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">Customer since {formatMonthYear(c.joined)}</span>
+              <span aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">
+                Agent <span className="text-white">{c.agent}</span>
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+          <HeaderAction href={`https://wa.me/${phoneDigits}`} icon="chat" external>
+            WhatsApp
+          </HeaderAction>
+          <HeaderAction href={`mailto:${c.email}`} icon="document">
+            Email
+          </HeaderAction>
+          <HeaderAction href={`/quotations/new?customer=${c.id}`} icon="plus">
+            New quotation
+          </HeaderAction>
+          <button
+            onClick={onEdit}
+            className="flex items-center justify-center gap-2 rounded-xl bg-gold-500 px-4 py-2.5 text-sm font-semibold text-navy-950 shadow-sm transition hover:bg-gold-400"
+          >
+            <Icon name="settings" size={16} /> Edit profile
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HeaderAction({ href, icon, external, children }: { href: string; icon: IconName; external?: boolean; children: ReactNode }) {
+  const className =
+    "flex items-center justify-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-medium ring-1 ring-white/15 transition hover:bg-white/20";
+  const content = (
+    <>
+      <Icon name={icon} size={16} className="text-sky-brand" /> {children}
+    </>
+  );
+  if (href.startsWith("/")) return <Link href={href} className={className}>{content}</Link>;
+  return (
+    <a href={href} className={className} {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+      {content}
+    </a>
+  );
+}
+
+/* ─────────────────────────── Stats ─────────────────────────── */
+
+function ProfileStats({ customer: c }: { customer: Customer }) {
+  const stats: { label: string; value: string; hint: string; icon: IconName }[] = [
+    { label: "Lifetime value", value: formatCurrency(c.lifetimeValue), hint: "Total spent", icon: "wallet" },
+    { label: "Trips booked", value: String(c.trips), hint: c.trips === 1 ? "1 trip so far" : `${c.trips} trips so far`, icon: "plane" },
+    {
+      label: "Average per trip",
+      value: c.trips ? formatCurrency(c.lifetimeValue / c.trips) : "—",
+      hint: "Lifetime value ÷ trips",
+      icon: "chart",
+    },
+    {
+      label: "Last trip",
+      value: c.lastTrip ? formatDate(c.lastTrip) : "—",
+      hint: c.lastTrip ? (c.favouriteDestination ? `Loves ${c.favouriteDestination}` : "Most recent departure") : "No trips yet",
+      icon: "calendar",
+    },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+      {stats.map((s) => (
+        <Card key={s.label} className="p-4 sm:p-5">
+          <div className="flex items-center gap-2 text-sm text-navy-500">
+            <Icon name={s.icon} size={16} className="text-navy-400" /> {s.label}
+          </div>
+          <p className="mt-1.5 text-lg font-semibold tracking-tight text-navy-900 sm:text-xl">{s.value}</p>
+          <p className="truncate text-xs text-navy-400">{s.hint}</p>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+/* ─────────────────────────── Detail cards ─────────────────────────── */
+
+function DetailRow({ icon, label, children }: { icon: IconName; label: string; children: ReactNode }) {
+  return (
+    <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-navy-50 text-navy-500">
+        <Icon name={icon} size={16} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <dt className="text-xs text-navy-400">{label}</dt>
+        <dd className="mt-0.5 break-words text-sm font-medium text-navy-900">{children}</dd>
+      </div>
+    </div>
+  );
+}
+
+const Missing = ({ children = "Not on file" }: { children?: ReactNode }) => (
+  <span className="font-normal text-navy-300">{children}</span>
+);
+
+function ContactCard({ customer: c, today }: { customer: Customer; today: string | null }) {
+  return (
+    <Card>
+      <CardHeader title="Contact details" />
+      <dl className="divide-y divide-navy-50 p-5 sm:px-6">
+        <DetailRow icon="document" label="Email">
+          <a href={`mailto:${c.email}`} className="text-sky-brand-dark hover:underline">
+            {c.email}
+          </a>
+        </DetailRow>
+        <DetailRow icon="chat" label="Mobile / WhatsApp">
+          <a href={`tel:${compactPhone(c.phone)}`} className="text-sky-brand-dark hover:underline">
+            {c.phone}
+          </a>
+          <span className="mt-1 block">
+            {c.whatsappOptIn ? (
+              <Badge tone="success">WhatsApp opted in</Badge>
+            ) : (
+              <Badge tone="neutral">No WhatsApp consent</Badge>
+            )}
+          </span>
+        </DetailRow>
+        <DetailRow icon="globe" label="Lives in">
+          {c.city}, {c.country}
+        </DetailRow>
+        <DetailRow icon="users" label="Nationality">
+          {c.nationality ?? <Missing />}
+        </DetailRow>
+        <DetailRow icon="calendar" label="Date of birth">
+          {c.dateOfBirth ? (
+            <>
+              {formatDate(c.dateOfBirth)}
+              {today && <span className="font-normal text-navy-400"> · {yearsBetween(c.dateOfBirth, today)} years old</span>}
+            </>
+          ) : (
+            <Missing />
+          )}
+        </DetailRow>
+      </dl>
+    </Card>
+  );
+}
+
+function PassportCard({ customer: c, today, onEdit }: { customer: Customer; today: string | null; onEdit: () => void }) {
+  const [revealed, setRevealed] = useState(false);
+
+  let status: { tone: BadgeTone; label: string; note: string } | null = null;
+  if (c.passportExpiry && today) {
+    const sixMonths = addDays(today, 182);
+    if (c.passportExpiry <= today)
+      status = { tone: "danger", label: "Expired", note: "Ask for a renewed passport before booking." };
+    else if (c.passportExpiry < sixMonths)
+      status = { tone: "warning", label: "Expires soon", note: "Under 6 months left — many countries will refuse entry." };
+    else status = { tone: "success", label: "Valid", note: "More than 6 months of validity left." };
+  }
+
+  return (
+    <Card>
+      <CardHeader title="Travel document" action={status && <Badge tone={status.tone}>{status.label}</Badge>} />
+      {c.passportNumber ? (
+        <div className="p-5 sm:px-6">
+          {/* Passport-style card */}
+          <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-navy-800 to-navy-950 p-4 text-white">
+            <Icon name="globe" size={84} strokeWidth={0.8} className="absolute -right-4 -top-4 text-white/10" />
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-gold-300">Passport</p>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <p className="font-mono text-lg tracking-widest">
+                {revealed ? c.passportNumber : `${"•".repeat(Math.max(c.passportNumber.length - 3, 3))}${c.passportNumber.slice(-3)}`}
+              </p>
+              <button
+                onClick={() => setRevealed((r) => !r)}
+                aria-pressed={revealed}
+                className="relative rounded-lg bg-white/10 px-2.5 py-1 text-xs font-medium hover:bg-white/20"
+              >
+                {revealed ? "Hide" : "Show"}
+              </button>
+            </div>
+            <div className="mt-3 flex gap-6 text-xs">
+              <div>
+                <p className="text-navy-300">Nationality</p>
+                <p className="font-medium">{c.nationality ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-navy-300">Expires</p>
+                <p className="font-medium">{c.passportExpiry ? formatDate(c.passportExpiry) : "—"}</p>
+              </div>
+            </div>
+          </div>
+          {status && (
+            <p
+              className={cn(
+                "mt-3 flex items-start gap-1.5 text-xs",
+                status.tone === "danger" ? "text-rose-600" : status.tone === "warning" ? "text-amber-700" : "text-navy-400",
+              )}
+            >
+              {status.tone !== "success" && <Icon name="alert" size={14} className="mt-px shrink-0" />}
+              {status.note}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center p-6 text-center">
+          <p className="text-sm text-navy-400">No passport on file yet — needed before tickets can be issued.</p>
+          <button onClick={onEdit} className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-sky-brand-dark hover:text-navy-900">
+            <Icon name="plus" size={16} /> Add passport details
+          </button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PreferencesCard({ customer: c }: { customer: Customer }) {
+  return (
+    <Card>
+      <CardHeader title="Travel preferences" />
+      <dl className="divide-y divide-navy-50 p-5 sm:px-6">
+        <DetailRow icon="chat" label="Preferred contact">
+          {c.preferredContact ?? <Missing>Not set</Missing>}
+        </DetailRow>
+        <DetailRow icon="plane" label="Seat">
+          {c.seatPreference ?? <Missing>No preference</Missing>}
+        </DetailRow>
+        <DetailRow icon="target" label="Favourite destination">
+          {c.favouriteDestination || <Missing>Not set</Missing>}
+        </DetailRow>
+      </dl>
+    </Card>
+  );
+}
+
+function NotesCard({ customer: c, onEdit }: { customer: Customer; onEdit: () => void }) {
+  return (
+    <Card>
+      <CardHeader
+        title="Notes"
+        action={
+          <button onClick={onEdit} className="text-sm font-medium text-sky-brand-dark hover:text-navy-900">
+            {c.notes ? "Edit" : "Add note"}
+          </button>
+        }
+      />
+      <div className="p-5 sm:px-6">
+        {c.notes ? (
+          <p className="whitespace-pre-line rounded-xl border-l-4 border-gold-500 bg-gold-50/60 px-4 py-3 text-sm leading-relaxed text-navy-700">
+            {c.notes}
+          </p>
+        ) : (
+          <p className="text-sm text-navy-300">No notes yet. Add dietary needs, special occasions or service preferences.</p>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/* ─────────────────────────── Trips & activity ─────────────────────────── */
+
+function TripsCard({ customer: c }: { customer: Customer }) {
+  const trips = useMemo(() => getCustomerTrips(c), [c]);
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        title="Trip history"
+        subtitle={
+          trips.length
+            ? c.trips > trips.length
+              ? `Latest ${trips.length} of ${c.trips} trips · demo data`
+              : `${c.trips} ${c.trips === 1 ? "trip" : "trips"} · demo data`
+            : undefined
+        }
+        action={
+          trips.length > 0 && (
+            <Link href="/bookings" className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-sky-brand-dark hover:text-navy-900">
+              All bookings <Icon name="arrowRight" size={14} />
+            </Link>
+          )
+        }
+      />
+      {trips.length ? (
+        <ul className="mt-4 divide-y divide-navy-50 border-t border-navy-50">
+          {trips.map((t) => (
+            <TripRow key={t.bookingId + t.departDate} trip={t} />
+          ))}
+        </ul>
+      ) : (
+        <div className="flex flex-col items-center px-6 py-12 text-center">
+          <div className="grid size-14 place-items-center rounded-2xl bg-navy-50 text-navy-400">
+            <Icon name="plane" size={24} />
+          </div>
+          <p className="mt-4 font-semibold text-navy-900">No trips yet</p>
+          <p className="mt-1 max-w-sm text-sm text-navy-400">Send {c.name.split(" ")[0]} a quotation to plan their first trip.</p>
+          <Link href="/quotations" className="mt-5 rounded-xl bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">
+            Create quotation
+          </Link>
+        </div>
+      )}
+      {c.trips > MAX_TRIPS_SHOWN && <div className="h-1" />}
+    </Card>
+  );
+}
+
+function TripRow({ trip: t }: { trip: Trip }) {
+  return (
+    <li className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 px-5 py-3.5 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto] sm:px-6">
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-xl",
+            t.status === "Cancelled" ? "bg-rose-50 text-rose-500" : "bg-sky-brand-light text-sky-brand-dark",
+          )}
+        >
+          <Icon name="plane" size={16} />
+        </span>
+        <div className="min-w-0">
+          <p className={cn("truncate font-medium text-navy-900", t.status === "Cancelled" && "text-navy-400 line-through")}>
+            {t.destination}
+          </p>
+          <p className="truncate text-xs text-navy-400">
+            <span className="font-mono">{t.bookingId}</span> · {t.kind}
+          </p>
+        </div>
+      </div>
+      <div className="col-start-1 row-start-2 pl-12 text-xs text-navy-500 sm:col-start-auto sm:row-start-auto sm:pl-0 sm:text-sm">
+        {formatDate(t.departDate)} – {formatDate(t.returnDate)}
+        <span className="block text-xs text-navy-400">
+          {t.nights} nights · {t.travellers} {t.travellers === 1 ? "traveller" : "travellers"}
+        </span>
+      </div>
+      <div className="row-span-2 flex flex-col items-end gap-1 sm:row-span-1">
+        <span className="font-semibold tabular-nums text-navy-900">{formatCurrency(t.amount)}</span>
+        <Badge tone={tripTone[t.status]}>{t.status}</Badge>
+      </div>
+    </li>
+  );
+}
+
+function ActivityCard({ customer: c }: { customer: Customer }) {
+  const trips = useMemo(() => getCustomerTrips(c), [c]);
+  const events: { date: string; icon: IconName; text: ReactNode; cls: string }[] = [
+    ...trips.slice(0, 4).map((t) => ({
+      date: t.departDate,
+      icon: (t.status === "Cancelled" ? "alert" : "plane") as IconName,
+      cls: t.status === "Cancelled" ? "bg-rose-50 text-rose-600" : "bg-sky-brand-light text-sky-brand-dark",
+      text: (
+        <>
+          {t.status === "In progress" ? "Departed for " : t.status === "Cancelled" ? "Cancelled trip to " : "Travelled to "}
+          <span className="font-medium text-navy-900">{t.destination}</span>
+          <span className="text-navy-400"> · {formatCurrency(t.amount)}</span>
+        </>
+      ),
+    })),
+    {
+      date: c.joined,
+      icon: "users",
+      cls: "bg-gold-50 text-gold-700",
+      text: (
+        <>
+          Became a FLYVERA customer, assigned to <span className="font-medium text-navy-900">{c.agent}</span>
+        </>
+      ),
+    },
+  ];
+
+  return (
+    <Card>
+      <CardHeader title="Activity" subtitle="Key moments with this customer" />
+      <ol className="relative space-y-5 p-5 before:absolute before:bottom-7 before:left-[37px] before:top-7 before:w-px before:bg-navy-100 sm:px-6 sm:before:left-[41px]">
+        {events.map((e, i) => (
+          <li key={i} className="relative flex gap-3">
+            <span className={cn("relative grid size-9 shrink-0 place-items-center rounded-full ring-4 ring-white", e.cls)}>
+              <Icon name={e.icon} size={16} />
+            </span>
+            <div className="pt-0.5 text-sm text-navy-600">
+              <p>{e.text}</p>
+              <p className="mt-0.5 text-xs text-navy-400">{formatDate(e.date)}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}
+
+/* ─────────────────────────── States ─────────────────────────── */
+
+function NotFound({ id }: { id: string }) {
+  return (
+    <Card className="flex flex-col items-center px-6 py-20 text-center">
+      <div className="grid size-16 place-items-center rounded-2xl bg-navy-50 text-navy-400">
+        <Icon name="users" size={28} />
+      </div>
+      <h1 className="mt-5 text-xl font-semibold text-navy-900">Customer not found</h1>
+      <p className="mt-2 max-w-md text-sm text-navy-400">
+        There&apos;s no customer with ID <span className="font-mono text-navy-700">{id}</span>. It may have been removed, or it was
+        added in a different browser.
+      </p>
+      <Link href="/customers" className="mt-6 rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
+        Back to customers
+      </Link>
+    </Card>
+  );
+}
+
+function ProfileSkeleton() {
+  return (
+    <div className="animate-pulse space-y-6" aria-busy="true" aria-label="Loading customer">
+      <div className="h-4 w-28 rounded bg-navy-100" />
+      <div className="h-40 rounded-3xl bg-navy-100" />
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-24 rounded-2xl bg-navy-50" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="h-80 rounded-2xl bg-navy-50" />
+        <div className="h-80 rounded-2xl bg-navy-50 lg:col-span-2" />
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Quotations ─────────────────────────── */
+
+function QuotesCard({ customer: c, today }: { customer: Customer; today: string | null }) {
+  const { quotes } = useQuotations();
+  const mine = quotes.filter((q) => q.recipient.kind === "customer" && q.recipient.id === c.id);
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        title="Quotations"
+        subtitle={mine.length ? `${mine.length} for ${c.name.split(" ")[0]}` : undefined}
+        action={
+          <Link
+            href={`/quotations/new?customer=${c.id}`}
+            className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-sky-brand-dark hover:text-navy-900"
+          >
+            <Icon name="plus" size={14} /> New quotation
+          </Link>
+        }
+      />
+      {mine.length ? (
+        <ul className="mt-4 divide-y divide-navy-50 border-t border-navy-50">
+          {mine.map((q) => (
+            <li key={q.id}>
+              <Link href={`/quotations/${q.id}`} className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-sky-brand-light/40 sm:px-6">
+                <span className="min-w-0">
+                  <span className="block truncate font-medium text-navy-900">{q.title}</span>
+                  <span className="text-xs text-navy-400">
+                    <span className="font-mono">{q.id}</span> · {formatDate(q.created)}
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-3">
+                  <span className="font-semibold tabular-nums text-navy-900">
+                    {formatMoney(quoteTotals(q.items, q.discount, q.taxRate).total)}
+                  </span>
+                  <QuoteStatusBadge status={displayStatus(q, today)} />
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="p-5 text-sm text-navy-400 sm:px-6">No quotations yet.</p>
+      )}
+    </Card>
+  );
+}
+
+/* ─────────────────────────── Bookings ─────────────────────────── */
+
+function BookingsCard({ customer: c, today }: { customer: Customer; today: string | null }) {
+  const { bookings } = useBookings();
+  const mine = bookings.filter((b) => b.customerId === c.id).sort((a, b) => b.departDate.localeCompare(a.departDate));
+  const owed = mine.filter((b) => b.status !== "Cancelled").reduce((s, b) => s + bookingMoney(b).balance, 0);
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        title="Bookings"
+        subtitle={mine.length ? `${mine.length} booked · ${owed > 0 ? `${formatMoney(owed)} still to pay` : "nothing owed"}` : undefined}
+        action={
+          <Link href="/bookings" className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-sky-brand-dark hover:text-navy-900">
+            All bookings <Icon name="arrowRight" size={14} />
+          </Link>
+        }
+      />
+      {mine.length ? (
+        <ul className="mt-4 divide-y divide-navy-50 border-t border-navy-50">
+          {mine.map((b) => (
+            <li key={b.id}>
+              <Link href={`/bookings/${b.id}`} className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-sky-brand-light/40 sm:px-6">
+                <span className="min-w-0">
+                  <span className="block truncate font-medium text-navy-900">{b.title}</span>
+                  <span className="flex flex-wrap items-center gap-1.5 text-xs text-navy-400">
+                    <span className="font-mono">{b.id}</span> · {formatDate(b.departDate)}
+                    <TimingChip booking={b} today={today} />
+                  </span>
+                </span>
+                <span className="flex shrink-0 flex-col items-end gap-1">
+                  <span className="font-semibold tabular-nums text-navy-900">{formatMoney(bookingMoney(b).total)}</span>
+                  <span className="flex gap-1">
+                    <BookingStatusBadge status={b.status} />
+                    <PaymentBadge booking={b} today={today} />
+                  </span>
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="p-5 text-sm text-navy-400 sm:px-6">No bookings yet — bookings are created from accepted quotations.</p>
+      )}
+    </Card>
+  );
+}
