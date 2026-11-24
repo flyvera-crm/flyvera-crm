@@ -1302,3 +1302,53 @@ describe("18 · Team & access (migration 19)", () => {
     await asUser(db, USERS.nora.id, (q) => q.fails("select * from team_directory($1)", [ORG], /Only an admin/));
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("19 · Dashboard data sources", () => {
+  // The dashboard reads flight segments, booking timeline lines and lead activity directly;
+  // it relies on Row Level Security to give each role only its own share.
+  const SOURCES = {
+    segments: "select 1 from booking_segments",
+    events: "select 1 from booking_events",
+    leadActivity: "select 1 from lead_activities",
+  };
+  const countAll = async (userId) => {
+    const out = {};
+    await asUser(db, userId, async (q) => {
+      for (const [k, sql] of Object.entries(SOURCES)) out[k] = await count(q, sql);
+      out.payments = await count(q, "select 1 from payments");
+    });
+    return out;
+  };
+
+  it("shows each role only the departures, timeline lines and lead activity it may see", async () => {
+    let all, sara;
+    await asOwner(db, async (q) => {
+      all = { segments: await count(q, SOURCES.segments), events: await count(q, SOURCES.events), leadActivity: await count(q, SOURCES.leadActivity) };
+      const visible = bookingsVisibleTo("Sara K.").map((b) => ids[b.id] ?? null);
+      const codes = bookingsVisibleTo("Sara K.").map((b) => b.id);
+      sara = {
+        segments: await count(q, "select 1 from booking_segments s join bookings b on b.id = s.booking_id where b.code = any($1)", [codes]),
+        events: await count(q, "select 1 from booking_events e join bookings b on b.id = e.booking_id where b.code = any($1)", [codes]),
+        leadActivity: await count(q, "select 1 from lead_activities a join leads l on l.id = a.lead_id where l.assigned_to = $1", [USERS.sara.id]),
+      };
+      assert.ok(visible.length > 0);
+    });
+    assert.ok(all.segments > 0 && all.events > 0 && all.leadActivity > 0, "the seed has data for every source");
+    assert.ok(sara.events < all.events, "the check is meaningful: Sara can't see every booking");
+
+    const saraSees = await countAll(USERS.sara.id);
+    assert.deepEqual({ segments: saraSees.segments, events: saraSees.events, leadActivity: saraSees.leadActivity }, sara, "sales agent: only her customers' bookings and her leads");
+
+    const samSees = await countAll(USERS.sam.id);
+    assert.deepEqual({ segments: samSees.segments, events: samSees.events, leadActivity: samSees.leadActivity }, all, "support: flight times, timelines and leads");
+    assert.equal(samSees.payments, 0, "support: no payment amounts");
+
+    const leoSees = await countAll(USERS.leo.id);
+    assert.equal(leoSees.segments, all.segments, "ticketing: every departure");
+    assert.equal(leoSees.leadActivity, 0, "ticketing: no lead activity");
+
+    const noraSees = await countAll(USERS.nora.id);
+    assert.deepEqual({ segments: noraSees.segments, events: noraSees.events, leadActivity: noraSees.leadActivity }, { segments: 0, events: 0, leadActivity: 0 }, "another agency: nothing");
+  });
+});

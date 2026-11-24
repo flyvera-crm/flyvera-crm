@@ -1,16 +1,18 @@
-import type { Activity } from "@/types/crm";
+import Link from "next/link";
+import type { ActivityItem } from "@/lib/dashboard-metrics";
 import { Icon, type IconName } from "@/components/icons";
-import { cn } from "@/lib/format";
+import { cn, formatDate } from "@/lib/format";
 
-const kindStyle: Record<Activity["kind"], { icon: IconName; cls: string }> = {
+const kindStyle: Record<ActivityItem["kind"], { icon: IconName; cls: string }> = {
   ticket: { icon: "ticket", cls: "bg-sky-brand-light text-sky-brand-dark" },
   payment: { icon: "wallet", cls: "bg-emerald-50 text-emerald-700" },
-  whatsapp: { icon: "chat", cls: "bg-green-50 text-green-700" },
   booking: { icon: "calendar", cls: "bg-navy-50 text-navy-700" },
-  lead: { icon: "document", cls: "bg-gold-50 text-gold-700" },
+  lead: { icon: "target", cls: "bg-gold-50 text-gold-700" },
 };
 
-export function ActivityFeed({ items }: { items: Activity[] }) {
+/** Latest booking timeline lines and lead activity this user may see, newest first. */
+export function ActivityFeed({ items }: { items: ActivityItem[] }) {
+  if (!items.length) return <p className="py-6 text-center text-sm text-navy-400">No recent activity.</p>;
   return (
     <ol className="relative space-y-5 before:absolute before:inset-y-2 before:left-[17px] before:w-px before:bg-navy-100">
       {items.map((a) => {
@@ -20,12 +22,16 @@ export function ActivityFeed({ items }: { items: Activity[] }) {
             <span className={cn("relative grid size-9 shrink-0 place-items-center rounded-full ring-4 ring-white", s.cls)}>
               <Icon name={s.icon} size={16} />
             </span>
-            <div className="pt-0.5 text-sm">
+            <div className="min-w-0 pt-0.5 text-sm">
               <p className="text-navy-600">
-                <span className="font-semibold text-navy-900">{a.who}</span> {a.action}{" "}
-                <span className="font-medium text-navy-900">{a.target}</span>
+                <Link href={a.href} className="font-medium text-sky-brand-dark hover:underline">
+                  {a.target}
+                </Link>{" "}
+                · {a.text}
               </p>
-              <p className="mt-0.5 text-xs text-navy-400">{a.time}</p>
+              <p className="mt-0.5 text-xs text-navy-400">
+                {a.who} · {formatDate(a.at)} {a.at.slice(11, 16)} UTC
+              </p>
             </div>
           </li>
         );

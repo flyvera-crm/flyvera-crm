@@ -5,6 +5,9 @@ import { usePathname } from "next/navigation";
 import { navSections } from "@/config/navigation";
 import { Icon } from "@/components/icons";
 import { cn } from "@/lib/format";
+import { useLeadList } from "@/lib/lead-store";
+import { followUpsDue } from "@/lib/dashboard-metrics";
+import { todayIso, useHydrated } from "@/lib/dates";
 import { Logo } from "./Logo";
 
 type SidebarProps = {
@@ -14,6 +17,12 @@ type SidebarProps = {
 
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
+  // Live badge: this user's open leads with a follow-up due today or overdue (after hydration, in their timezone).
+  const leads = useLeadList();
+  const hydrated = useHydrated();
+  const followUps = hydrated ? followUpsDue(leads, todayIso()).length : 0;
+  const badgeFor = (item: (typeof navSections)[number]["items"][number]) =>
+    item.liveBadge === "leadFollowUps" ? (followUps > 0 ? String(followUps) : undefined) : item.badge;
 
   return (
     <>
@@ -76,9 +85,12 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                           className={cn(active ? "text-sky-brand" : "text-navy-300 group-hover:text-sky-brand")}
                         />
                         <span className="flex-1">{item.label}</span>
-                        {item.badge && (
-                          <span className="rounded-full bg-gold-500/15 px-2 py-0.5 text-[11px] font-semibold text-gold-300">
-                            {item.badge}
+                        {badgeFor(item) && (
+                          <span
+                            className="rounded-full bg-gold-500/15 px-2 py-0.5 text-[11px] font-semibold text-gold-300"
+                            title={item.liveBadge === "leadFollowUps" ? "Lead follow-ups due today or overdue" : undefined}
+                          >
+                            {badgeFor(item)}
                           </span>
                         )}
                       </Link>

@@ -30,9 +30,11 @@ function Sparkline({ data }: { data: number[] }) {
   );
 }
 
-export function StatCard({ kpi, upIsGood = true }: { kpi: Kpi; upIsGood?: boolean }) {
-  const up = kpi.delta >= 0;
-  const good = up === upIsGood;
+/** One headline number. `value` null = not known yet (before the visitor's date is available). */
+export function StatCard({ kpi, pending = false }: { kpi: Kpi; pending?: boolean }) {
+  const delta = pending ? null : kpi.delta;
+  const up = (delta ?? 0) >= 0;
+  const good = up === (kpi.upIsGood ?? true);
   return (
     <Card className="p-5">
       <div className="flex items-start justify-between">
@@ -41,23 +43,28 @@ export function StatCard({ kpi, upIsGood = true }: { kpi: Kpi; upIsGood?: boolea
           <Icon name={kpi.icon} size={20} />
         </div>
       </div>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-navy-900 sm:text-[28px]">{formatValue(kpi)}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-navy-900 sm:text-[28px]">{pending ? "—" : formatValue(kpi)}</p>
       <div className="mt-1 flex items-center gap-2 text-xs">
-        <span
-          className={cn(
-            "inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 font-semibold",
-            good ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700",
-          )}
-        >
-          <Icon name={up ? "arrowUp" : "arrowDown"} size={12} strokeWidth={2.5} />
-          {up ? "+" : ""}
-          {kpi.delta}%
-        </span>
+        {delta !== null && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 font-semibold",
+              good ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700",
+            )}
+          >
+            <Icon name={up ? "arrowUp" : "arrowDown"} size={12} strokeWidth={2.5} />
+            {up ? "+" : ""}
+            {delta}
+            {kpi.format === "percent" ? " pts" : "%"}
+          </span>
+        )}
         <span className="text-navy-400">{kpi.period}</span>
       </div>
-      <div className="mt-4">
-        <Sparkline data={kpi.trend} />
-      </div>
+      {kpi.trend.length > 1 && !pending && (
+        <div className="mt-4">
+          <Sparkline data={kpi.trend} />
+        </div>
+      )}
     </Card>
   );
 }

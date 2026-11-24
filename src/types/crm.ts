@@ -41,10 +41,12 @@ export type Kpi = {
   label: string;
   value: number;
   format: "currency" | "number" | "percent";
-  delta: number; // % change vs previous period
+  delta: number | null; // % change vs previous period; null when there's nothing to compare with
   period: string;
-  icon: "wallet" | "calendar" | "target" | "users";
+  icon: "wallet" | "calendar" | "target" | "users" | "card" | "plane" | "clock" | "chart";
   trend: number[];
+  /** Higher is better (green when up). false for things like "overdue". Default true. */
+  upIsGood?: boolean;
 };
 
 export type PaymentMethod = "Card" | "Bank transfer" | "Cash" | "Other";

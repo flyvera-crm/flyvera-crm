@@ -6,6 +6,8 @@ export type NavItem = {
   icon: IconName;
   description: string;
   badge?: string;
+  /** A count worked out from live data in the sidebar (shown only when above 0). */
+  liveBadge?: "leadFollowUps";
 };
 
 export type NavSection = {
@@ -25,8 +27,8 @@ export const navSections: NavSection[] = [
     title: "Sales & Clients",
     items: [
       { label: "Customers", href: "/customers", icon: "users", description: "Traveller profiles, passports, preferences and trip history." },
-      { label: "Leads", href: "/leads", icon: "target", description: "Track enquiries from first contact to confirmed booking.", badge: "12" },
-      { label: "WhatsApp", href: "/whatsapp", icon: "chat", description: "Chat with travellers and send itineraries over WhatsApp.", badge: "5" },
+      { label: "Leads", href: "/leads", icon: "target", description: "Track enquiries from first contact to confirmed booking.", liveBadge: "leadFollowUps" },
+      { label: "WhatsApp", href: "/whatsapp", icon: "chat", description: "Chat with travellers and send itineraries over WhatsApp." },
       { label: "AI Assistant", href: "/ai-assistant", icon: "sparkles", description: "Draft itineraries, replies and quotations with AI." },
     ],
   },
