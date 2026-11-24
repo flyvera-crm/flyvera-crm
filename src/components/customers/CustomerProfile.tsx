@@ -11,7 +11,7 @@ import { addDays, getCustomerTrips, MAX_TRIPS_SHOWN, type Trip, type TripStatus 
 import { compactPhone } from "@/lib/customer-validation";
 import { revealPassport } from "@/lib/actions/customers";
 import { todayIso, useCustomers } from "./CustomersProvider";
-import { displayStatus, useQuotations } from "@/lib/quote-store";
+import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
 import { useBookings } from "@/lib/booking-store";
@@ -28,13 +28,14 @@ function yearsBetween(fromIso: string, toIso: string) {
   return ty - fy - (tm < fm || (tm === fm && td < fd) ? 1 : 0);
 }
 
-// Bookings and quotations still run on demo data whose codes overlap real customers
-// (CU-1001…), and the trip history / activity cards are generated. Until those modules
-// read the database, real profiles show a note instead of mixing in demo records.
-const LINKED_MODULES_CONNECTED = false;
+// Quotations come from the database. Bookings still run on demo data whose codes overlap
+// real customers (CU-1001…), and the trip history / activity cards are generated from it.
+// Until Bookings reads the database, those cards show a note instead of demo records.
+const BOOKINGS_CONNECTED = false;
 
 export function CustomerProfile({ id }: { id: string }) {
   const { getCustomer, hydrated, addedIds, openEditForm, access } = useCustomers();
+  const quotesVisible = useQuoteData().access.canView; // support agents don't see quotations
   const customer = getCustomer(id);
 
   // Customers are loaded on the server, so a missing one is either not there or not visible to this role.
@@ -61,10 +62,10 @@ export function CustomerProfile({ id }: { id: string }) {
         </div>
         <div className="space-y-6 lg:col-span-2">
           <NotesCard customer={customer} onEdit={onEdit} />
-          {LINKED_MODULES_CONNECTED ? (
+          {quotesVisible && <QuotesCard customer={customer} today={today} />}
+          {BOOKINGS_CONNECTED ? (
             <>
               <BookingsCard customer={customer} today={today} />
-              <QuotesCard customer={customer} today={today} />
               <TripsCard customer={customer} />
               <ActivityCard customer={customer} />
             </>
@@ -80,13 +81,13 @@ export function CustomerProfile({ id }: { id: string }) {
 function PendingHistoryCard() {
   return (
     <Card>
-      <CardHeader title="Bookings, quotations & trips" />
+      <CardHeader title="Bookings & trips" />
       <div className="flex items-start gap-3 p-5 sm:px-6">
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-navy-50 text-navy-400">
           <Icon name="plane" size={18} />
         </span>
         <p className="text-sm text-navy-500">
-          Bookings, quotations and trip history will appear here once those modules are connected to the database.
+          Bookings and trip history will appear here once the Bookings module is connected to the database.
         </p>
       </div>
     </Card>
@@ -96,6 +97,7 @@ function PendingHistoryCard() {
 /* ─────────────────────────── Header ─────────────────────────── */
 
 function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isNew: boolean; onEdit?: () => void }) {
+  const canQuote = useQuoteData().access.canEdit;
   const phoneDigits = compactPhone(c.phone).replace("+", "");
   return (
     <section className="relative overflow-hidden rounded-3xl bg-navy-900 p-5 text-white sm:p-7">
@@ -152,9 +154,11 @@ function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isN
               Email
             </HeaderAction>
           )}
-          <HeaderAction href={`/quotations/new?customer=${c.id}`} icon="plus">
-            New quotation
-          </HeaderAction>
+          {canQuote && (
+            <HeaderAction href={`/quotations/new?customer=${c.id}`} icon="plus">
+              New quotation
+            </HeaderAction>
+          )}
           {onEdit && (
             <button
               onClick={onEdit}
@@ -587,6 +591,7 @@ function NotFound({ id }: { id: string }) {
 
 function QuotesCard({ customer: c, today }: { customer: Customer; today: string | null }) {
   const { quotes } = useQuotations();
+  const canCreate = useQuoteData().access.canEdit;
   const mine = quotes.filter((q) => q.recipient.kind === "customer" && q.recipient.id === c.id);
   return (
     <Card className="overflow-hidden">
@@ -594,12 +599,14 @@ function QuotesCard({ customer: c, today }: { customer: Customer; today: string 
         title="Quotations"
         subtitle={mine.length ? `${mine.length} for ${c.name.split(" ")[0]}` : undefined}
         action={
-          <Link
-            href={`/quotations/new?customer=${c.id}`}
-            className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-sky-brand-dark hover:text-navy-900"
-          >
-            <Icon name="plus" size={14} /> New quotation
-          </Link>
+          canCreate && (
+            <Link
+              href={`/quotations/new?customer=${c.id}`}
+              className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-sky-brand-dark hover:text-navy-900"
+            >
+              <Icon name="plus" size={14} /> New quotation
+            </Link>
+          )
         }
       />
       {mine.length ? (

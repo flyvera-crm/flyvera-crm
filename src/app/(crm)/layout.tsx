@@ -5,6 +5,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { getCustomerData } from "@/lib/data/customers";
 import { getLeadData } from "@/lib/data/leads";
 import { LeadListProvider } from "@/lib/lead-store";
+import { getQuoteData } from "@/lib/data/quotations";
+import { QuoteListProvider } from "@/lib/quote-store";
 
 // Every page inside the (crm) folder gets the sidebar + top bar.
 // The "(crm)" folder name is a route group — it does NOT appear in the URL.
@@ -15,10 +17,16 @@ import { LeadListProvider } from "@/lib/lead-store";
 //                        + the Add/Edit customer panel, so any module (e.g. Leads →
 //                        "Convert to customer") can use them
 //  • LeadListProvider  – leads from Supabase, shared by Leads, Quotations, Bookings and Reports
+//  • QuoteListProvider – quotations from Supabase, shared by Quotations, Customers, Leads, Bookings and Reports
 //  • The signed-in user (name, role) for the top bar. Logged-out visitors never
 //    get here: src/proxy.ts sends them to /login, and getCurrentUser() does too.
 export default async function CrmLayout({ children }: LayoutProps<"/">) {
-  const [user, { customers, access }, leadData] = await Promise.all([getCurrentUser(), getCustomerData(), getLeadData()]);
+  const [user, { customers, access }, leadData, quoteData] = await Promise.all([
+    getCurrentUser(),
+    getCustomerData(),
+    getLeadData(),
+    getQuoteData(),
+  ]);
   const shellUser = {
     name: user.name,
     email: user.email,
@@ -30,7 +38,9 @@ export default async function CrmLayout({ children }: LayoutProps<"/">) {
     <ToastProvider>
       <CustomersProvider initialCustomers={customers} access={access}>
         <LeadListProvider initialLeads={leadData.leads} access={leadData.access}>
-          <AppShell user={shellUser}>{children}</AppShell>
+          <QuoteListProvider initialQuotes={quoteData.quotes} access={quoteData.access}>
+            <AppShell user={shellUser}>{children}</AppShell>
+          </QuoteListProvider>
         </LeadListProvider>
       </CustomersProvider>
     </ToastProvider>

@@ -1,44 +1,30 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import type { Customer, Lead, QuoteItemType, QuoteRecipient, Quotation } from "@/types/crm";
-import { AGENTS } from "@/config/customer-options";
+import type { Customer, Lead, QuoteItemType, Quotation } from "@/types/crm";
+import type { AgentOption } from "@/lib/data/team";
 import { LOW_MARGIN_PERCENT, QUOTE_ITEM_TYPES } from "@/config/quote-options";
 import {
   draftItemsForTotals,
   itemFieldId,
   newItem,
   nextItemId,
-  nextQuoteId,
   parseAmount,
   QUOTE_NOTES_MAX,
-  toQuotation,
   validateQuote,
   type QuoteFormValues,
   type QuoteItemDraft,
+  type QuoteMessages,
 } from "@/lib/quote-validation";
 import { lineTotal, quoteTotals } from "@/lib/quote-math";
-import { quoteStore } from "@/lib/quote-store";
+import { useQuoteData } from "@/lib/quote-store";
+import { saveQuote } from "@/lib/actions/quotations";
 import { Card } from "@/components/ui/Card";
 import { Field, fieldA11y, inputClass } from "@/components/ui/form";
 import { useToast } from "@/components/ui/Toast";
 import { Icon } from "@/components/icons";
 import { cn, formatMoney } from "@/lib/format";
-
-/** Turns the "customer:CU-1001" / "lead:LD-2053" select value into a recipient snapshot. */
-export function resolveRecipient(value: string, customers: Customer[], leads: Lead[]): QuoteRecipient | null {
-  const [kind, id] = value.split(":");
-  if (kind === "customer") {
-    const c = customers.find((x) => x.id === id);
-    return c ? { kind, id, name: c.name, email: c.email, phone: c.phone } : null;
-  }
-  if (kind === "lead") {
-    const l = leads.find((x) => x.id === id);
-    return l ? { kind, id, name: l.name, email: l.email, phone: l.phone } : null;
-  }
-  return null;
-}
 
 function SelectBox({ invalid, children, ...rest }: React.SelectHTMLAttributes<HTMLSelectElement> & { invalid?: boolean }) {
   return (
@@ -72,7 +58,7 @@ export function QuoteBuilder({
   initialValues,
   customers,
   leads,
-  allQuotes,
+  agentOptions,
   today,
 }: {
   mode: "add" | "edit";
@@ -80,16 +66,21 @@ export function QuoteBuilder({
   initialValues: QuoteFormValues;
   customers: Customer[];
   leads: Lead[];
-  allQuotes: Quotation[];
+  /** People this user may name as "Prepared by" (from the database roles). */
+  agentOptions: AgentOption[];
   today: string;
 }) {
   const router = useRouter();
   const toast = useToast();
+  const { showSaved } = useQuoteData();
   const formRef = useRef<HTMLFormElement>(null);
   const [values, setValues] = useState(initialValues);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitted, setSubmitted] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [saving, startSaving] = useTransition();
+  const [serverErrors, setServerErrors] = useState<QuoteMessages>({});
+  const [serverMessage, setServerMessage] = useState<string | null>(null);
 
   const { errors, warnings } = useMemo(() => validateQuote(values, today), [values, today]);
   const errorCount = Object.keys(errors).length;
@@ -98,7 +89,7 @@ export function QuoteBuilder({
     const t = parseAmount(values.taxRate);
     return quoteTotals(draftItemsForTotals(values.items), Number.isFinite(d) ? d : 0, Number.isFinite(t) ? t : 0);
   }, [values.items, values.discount, values.taxRate]);
-  const quoteId = existing?.id ?? nextQuoteId(allQuotes);
+  const quoteId = existing?.id ?? null; // new quotations get their code when saved
 
   // Warn before closing the tab with unsaved changes.
   useEffect(() => {
@@ -108,14 +99,16 @@ export function QuoteBuilder({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
+  // Errors from the server show until the user changes something.
   const show = (id: string) => submitted || touched[id];
-  const err = (id: string) => (show(id) ? errors[id] : undefined);
+  const err = (id: string) => (show(id) ? errors[id] : undefined) ?? serverErrors[id];
   const warn = (id: string) => (show(id) ? warnings[id] : undefined);
   const touch = (id: string) => () => setTouched((t) => (t[id] ? t : { ...t, [id]: true }));
 
   function update(patch: Partial<QuoteFormValues>) {
     setValues((v) => ({ ...v, ...patch }));
     setDirty(true);
+    if (Object.keys(serverErrors).length) setServerErrors({});
   }
 
   type TextField = Exclude<keyof QuoteFormValues, "items">;
@@ -149,10 +142,11 @@ export function QuoteBuilder({
   function chooseRecipient(value: string) {
     const [kind, id] = value.split(":");
     const patch: Partial<QuoteFormValues> = { recipient: value };
+    const canAssign = (userId?: string) => Boolean(userId && agentOptions.some((a) => a.id === userId));
     if (kind === "lead") {
       const l = leads.find((x) => x.id === id);
       if (l) {
-        if (!values.agent) patch.agent = l.agent;
+        if (!values.agent && canAssign(l.agentId)) patch.agent = l.agentId;
         if (!values.destination) patch.destination = l.destination;
         if (!values.title) patch.title = `${l.tripType} in ${l.destination}`;
         if (!values.departDate && l.departDate && l.departDate >= today) patch.departDate = l.departDate;
@@ -161,39 +155,47 @@ export function QuoteBuilder({
       }
     } else if (kind === "customer") {
       const c = customers.find((x) => x.id === id);
-      if (c && !values.agent) patch.agent = c.agent;
+      if (c && !values.agent && canAssign(c.agentId)) patch.agent = c.agentId;
     }
     update(patch);
   }
 
+  /** Focuses the first problem in page order (or the items area if there are no items). */
+  function focusFirst(messages: QuoteMessages) {
+    const form = formRef.current;
+    const first = form && Array.from(form.elements).find((el) => (el as HTMLElement).id && messages[(el as HTMLElement).id]);
+    if (first) (first as HTMLElement).focus();
+    else document.getElementById("items-section")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (saving) return;
     setSubmitted(true);
+    setServerMessage(null);
     if (errorCount) {
-      // Focus the first problem in page order (or the items area if there are no items).
-      const form = formRef.current;
-      const first = form && Array.from(form.elements).find((el) => (el as HTMLElement).id && errors[(el as HTMLElement).id]);
-      if (first) (first as HTMLElement).focus();
-      else document.getElementById("items-section")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      focusFirst(errors);
       return;
     }
-    const recipient = resolveRecipient(values.recipient, customers, leads);
-    if (!recipient) return;
-    const saved =
-      mode === "edit" && existing
-        ? toQuotation(values, recipient, existing, today)
-        : toQuotation(values, recipient, { id: quoteId, created: today, status: "Draft" }, today);
-    if (mode === "edit") quoteStore.update(saved); // ← later: API call
-    else quoteStore.add(saved);
-    setDirty(false);
-    toast({
-      message: (
-        <p>
-          {mode === "edit" ? "Changes saved to" : "Draft saved as"} <span className="font-mono text-gold-300">{saved.id}</span>.
-        </p>
-      ),
+    startSaving(async () => {
+      const result = await saveQuote({ dbId: existing?.dbId }, values);
+      if (!result.ok) {
+        setServerErrors(result.fieldErrors ?? {});
+        setServerMessage(result.message);
+        if (result.fieldErrors) focusFirst(result.fieldErrors);
+        return;
+      }
+      setDirty(false);
+      showSaved(result.quote, mode === "add");
+      toast({
+        message: (
+          <p>
+            {mode === "edit" ? "Changes saved to" : "Draft saved as"} <span className="font-mono text-gold-300">{result.quote.id}</span>.
+          </p>
+        ),
+      });
+      router.push(`/quotations/${result.quote.id}`);
     });
-    router.push(`/quotations/${saved.id}`);
   }
 
   function cancel() {
@@ -208,13 +210,14 @@ export function QuoteBuilder({
     <button
       type="submit"
       form="quote-form"
+      disabled={saving}
       className={cn(
-        "flex items-center justify-center gap-2 rounded-xl bg-navy-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-navy-800",
+        "flex items-center justify-center gap-2 rounded-xl bg-navy-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-navy-800 disabled:cursor-wait disabled:opacity-70",
         extra,
       )}
     >
       <Icon name="check" size={16} className="text-gold-300" strokeWidth={2.5} />
-      {mode === "edit" ? "Save changes" : "Save draft"}
+      {saving ? "Saving…" : mode === "edit" ? "Save changes" : "Save draft"}
     </button>
   );
 
@@ -229,6 +232,13 @@ export function QuoteBuilder({
             </span>{" "}
             before this quotation can be saved.
           </p>
+        </div>
+      )}
+
+      {serverMessage && !(submitted && errorCount > 0) && (
+        <div role="alert" className="mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-sm text-rose-700">
+          <Icon name="alert" size={18} className="mt-px shrink-0" />
+          <p className="font-semibold">{serverMessage}</p>
         </div>
       )}
 
@@ -351,9 +361,11 @@ export function QuoteBuilder({
               </Field>
               <Field id="agent" label="Prepared by" required error={err("agent")}>
                 <SelectBox {...bind("agent")} invalid={!!err("agent")}>
-                  <option value="">Choose an agent…</option>
-                  {AGENTS.map((a) => (
-                    <option key={a}>{a}</option>
+                  <option value="">{agentOptions.length ? "Choose an agent…" : "No agents available"}</option>
+                  {agentOptions.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
                   ))}
                 </SelectBox>
               </Field>
@@ -380,7 +392,9 @@ export function QuoteBuilder({
           <Card className="overflow-hidden">
             <div className="bg-navy-900 px-5 py-4 text-white">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gold-300">{mode === "edit" ? "Editing" : "New quotation"}</p>
-              <p className="mt-0.5 font-mono text-lg">{quoteId}</p>
+              <p className={cn("mt-0.5", quoteId ? "font-mono text-lg" : "text-sm text-navy-200")}>
+                {quoteId ?? "Gets a quotation code when saved"}
+              </p>
             </div>
             <dl className="space-y-2.5 p-5 text-sm">
               <Row label="Subtotal" value={formatMoney(totals.subtotal)} />

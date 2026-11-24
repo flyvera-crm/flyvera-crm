@@ -174,6 +174,8 @@ export type QuoteItem = {
   quantity: number;
   unitPrice: number; // selling price per unit (what the customer pays)
   cost: number; // total supplier cost for this line (internal only)
+  /** Database row id (quotation lines loaded from the database). `id` is a short local key like "i1". */
+  dbId?: string;
 };
 
 export type QuoteRecipient = {
@@ -204,6 +206,11 @@ export type Quotation = {
   updated: string;
   sentAt?: string;
   respondedAt?: string;
+  // Set for quotations loaded from the database:
+  /** Database row id. The readable code (QT-3001) is `id`. */
+  dbId?: string;
+  /** User id of the agent who prepared it; `agent` holds their display name. */
+  agentId?: string;
 };
 
 export type MonthlyRevenue = { month: string; revenue: number };

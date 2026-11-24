@@ -3,13 +3,12 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { Quotation, QuoteDisplayStatus } from "@/types/crm";
-import { QUOTE_STATUS_TONE, DEFAULT_VALIDITY_DAYS } from "@/config/quote-options";
+import { QUOTE_STATUS_TONE } from "@/config/quote-options";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { useLeadData } from "@/lib/lead-store";
-import { quoteStore, useQuotations } from "@/lib/quote-store";
-import { nextQuoteId } from "@/lib/quote-validation";
-import { addDays, todayIso } from "@/lib/dates";
+import { useQuoteData } from "@/lib/quote-store";
+import { duplicateQuote, setQuoteStatus } from "@/lib/actions/quotations";
 import { formatDate, formatMoney } from "@/lib/format";
 import { quoteTotals } from "@/lib/quote-math";
 
@@ -30,27 +29,41 @@ export function shareText(q: Quotation) {
 }
 
 /**
- * Status changes for a quotation. Keeps the linked lead in step:
+ * Status changes for a quotation, saved to the database. Keeps the linked lead in step:
  * sending moves a New/Contacted lead to "Quoted"; accepting moves it to "Won".
  */
 export function useQuoteActions() {
   const router = useRouter();
   const toast = useToast();
   const { leads, updateLeadStatus } = useLeadData();
-  const { quotes } = useQuotations();
+  const { showSaved } = useQuoteData();
 
   const leadFor = useCallback(
     (q: Quotation) => (q.recipient.kind === "lead" ? leads.find((l) => l.id === q.recipient.id) : undefined),
     [leads],
   );
 
+  /** Saves a status; shows the reason and returns null when the server refuses. */
+  const changeStatus = useCallback(
+    async (q: Quotation, status: "Sent" | "Accepted" | "Declined") => {
+      if (!q.dbId) return null;
+      const result = await setQuoteStatus(q.dbId, status);
+      if (!result.ok) {
+        toast({ tone: "info", message: <p>{result.message}</p> });
+        return null;
+      }
+      showSaved(result.quote, false);
+      return result.quote;
+    },
+    [showSaved, toast],
+  );
+
   const markSent = useCallback(
-    (q: Quotation) => {
-      const date = todayIso();
-      quoteStore.update({ ...q, status: "Sent", sentAt: date, updated: date }); // ← later: API call
+    async (q: Quotation) => {
+      if (!(await changeStatus(q, "Sent"))) return;
       const lead = leadFor(q);
       const moved = lead && (lead.stage === "New" || lead.stage === "Contacted");
-      if (moved) void updateLeadStatus(lead, { stage: "Quoted" }); // saved to the database
+      if (moved) void updateLeadStatus(lead, { stage: "Quoted" });
       toast({
         message: (
           <p>
@@ -60,16 +73,15 @@ export function useQuoteActions() {
         ),
       });
     },
-    [leadFor, toast, updateLeadStatus],
+    [changeStatus, leadFor, toast, updateLeadStatus],
   );
 
   const markAccepted = useCallback(
-    (q: Quotation) => {
-      const date = todayIso();
-      quoteStore.update({ ...q, status: "Accepted", respondedAt: date, updated: date });
+    async (q: Quotation) => {
+      if (!(await changeStatus(q, "Accepted"))) return;
       const lead = leadFor(q);
       const won = lead && lead.stage !== "Won";
-      if (won) void updateLeadStatus(lead, { stage: "Won", lostReason: null, nextFollowUp: null }); // saved to the database
+      if (won) void updateLeadStatus(lead, { stage: "Won", lostReason: null, nextFollowUp: null });
       toast({
         message: (
           <p>
@@ -85,13 +97,12 @@ export function useQuoteActions() {
               : undefined,
       });
     },
-    [leadFor, router, toast, updateLeadStatus],
+    [changeStatus, leadFor, router, toast, updateLeadStatus],
   );
 
   const markDeclined = useCallback(
-    (q: Quotation) => {
-      const date = todayIso();
-      quoteStore.update({ ...q, status: "Declined", respondedAt: date, updated: date });
+    async (q: Quotation) => {
+      if (!(await changeStatus(q, "Declined"))) return;
       toast({
         tone: "info",
         message: (
@@ -101,28 +112,29 @@ export function useQuoteActions() {
         ),
       });
     },
-    [toast],
+    [changeStatus, toast],
   );
 
   /** Copies a quotation into a new draft and opens it for editing. */
   const duplicate = useCallback(
-    (q: Quotation) => {
-      const date = todayIso();
-      const id = nextQuoteId(quotes);
-      quoteStore.add({
-        ...q,
-        id,
-        status: "Draft",
-        created: date,
-        updated: date,
-        validUntil: addDays(date, DEFAULT_VALIDITY_DAYS),
-        sentAt: undefined,
-        respondedAt: undefined,
+    async (q: Quotation) => {
+      if (!q.dbId) return;
+      const result = await duplicateQuote(q.dbId);
+      if (!result.ok) {
+        toast({ tone: "info", message: <p>{result.message}</p> });
+        return;
+      }
+      showSaved(result.quote, true);
+      toast({
+        message: (
+          <p>
+            Copied {q.id} to new draft <span className="font-mono text-gold-300">{result.quote.id}</span>.
+          </p>
+        ),
       });
-      toast({ message: <p>Copied {q.id} to new draft <span className="font-mono text-gold-300">{id}</span>.</p> });
-      router.push(`/quotations/${id}/edit`);
+      router.push(`/quotations/${result.quote.id}/edit`);
     },
-    [quotes, router, toast],
+    [router, showSaved, toast],
   );
 
   return { markSent, markAccepted, markDeclined, duplicate };

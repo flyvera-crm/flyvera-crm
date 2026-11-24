@@ -1,8 +1,8 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useTransition, type ReactNode } from "react";
 import Link from "next/link";
-import { displayStatus, useQuotations } from "@/lib/quote-store";
+import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { compactPhone } from "@/lib/customer-validation";
 import { LOW_MARGIN_PERCENT } from "@/config/quote-options";
@@ -10,24 +10,35 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatDate, formatMoney } from "@/lib/format";
 import { QuoteDocument } from "./QuoteDocument";
-import { EditorSkeleton, QuoteMissing } from "./QuoteEditor";
+import { QuoteMissing } from "./QuoteEditor";
 import { QuoteStatusBadge, shareText, useQuoteActions } from "./quote-actions";
 import { useBookingActions } from "@/components/bookings/use-booking-actions";
 import { useBookings } from "@/lib/booking-store";
 
+// Bookings still run on demo data whose quotation codes (QT-3001…) overlap real ones.
+// Until that module reads the database, accepted quotations show a note instead of
+// "Create booking" / "View booking".
+const BOOKINGS_CONNECTED = false;
+
 export function QuoteView({ id }: { id: string }) {
-  const { quotes, hydrated, today } = useQuotations();
+  const { quotes, today } = useQuotations();
+  const { access } = useQuoteData();
   const actions = useQuoteActions();
   const { createFromQuote } = useBookingActions();
   const { bookings } = useBookings();
+  const [busy, startBusy] = useTransition();
   const quote = quotes.find((q) => q.id === id);
-  const booking = quote ? bookings.find((b) => b.quoteId === quote.id) : undefined;
+  const booking = quote && BOOKINGS_CONNECTED ? bookings.find((b) => b.quoteId === quote.id) : undefined;
 
-  if (!quote) return hydrated ? <QuoteMissing id={id} /> : <EditorSkeleton />;
+  // Quotations are loaded on the server, so a missing one isn't there or isn't visible to this role.
+  if (!quote) return <QuoteMissing id={id} />;
 
   const status = displayStatus(quote, today);
   const t = quoteTotals(quote.items, quote.discount, quote.taxRate);
-  const editable = quote.status === "Draft" || quote.status === "Sent";
+  const canEdit = access.canEdit;
+  const editable = canEdit && (quote.status === "Draft" || quote.status === "Sent");
+  /** Runs a status action once (buttons are disabled until it finishes). */
+  const run = (action: () => Promise<void>) => startBusy(action);
   const text = encodeURIComponent(shareText(quote));
   const waHref = `https://wa.me/${compactPhone(quote.recipient.phone).replace("+", "")}?text=${text}`;
   const mailHref = quote.recipient.email
@@ -58,39 +69,47 @@ export function QuoteView({ id }: { id: string }) {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {quote.status === "Draft" && (
-              <ToolbarButton primary icon="arrowRight" onClick={() => actions.markSent(quote)}>
+            {canEdit && quote.status === "Draft" && (
+              <ToolbarButton primary icon="arrowRight" disabled={busy} onClick={() => run(() => actions.markSent(quote))}>
                 Mark as sent
               </ToolbarButton>
             )}
-            {quote.status === "Sent" && (
+            {canEdit && quote.status === "Sent" && (
               <>
-                <ToolbarButton primary icon="check" onClick={() => actions.markAccepted(quote)}>
+                <ToolbarButton primary icon="check" disabled={busy} onClick={() => run(() => actions.markAccepted(quote))}>
                   Accepted
                 </ToolbarButton>
-                <ToolbarButton danger icon="close" onClick={() => actions.markDeclined(quote)}>
+                <ToolbarButton danger icon="close" disabled={busy} onClick={() => run(() => actions.markDeclined(quote))}>
                   Declined
                 </ToolbarButton>
               </>
             )}
             {quote.status === "Accepted" &&
-              (booking ? (
+              (!BOOKINGS_CONNECTED ? (
+                <span className="flex items-center gap-2 rounded-xl bg-navy-50 px-4 py-2 text-sm text-navy-500">
+                  <Icon name="calendar" size={16} /> Bookings will be connected next
+                </span>
+              ) : booking ? (
                 <ToolbarLink href={`/bookings/${booking.id}`} icon="calendar">
                   View booking {booking.id}
                 </ToolbarLink>
               ) : (
-                <ToolbarButton primary icon="calendar" onClick={() => createFromQuote(quote)}>
-                  Create booking
-                </ToolbarButton>
+                canEdit && (
+                  <ToolbarButton primary icon="calendar" onClick={() => createFromQuote(quote)}>
+                    Create booking
+                  </ToolbarButton>
+                )
               ))}
             {editable && (
               <ToolbarLink href={`/quotations/${quote.id}/edit`} icon="settings">
                 Edit
               </ToolbarLink>
             )}
-            <ToolbarButton icon="document" onClick={() => actions.duplicate(quote)}>
-              Duplicate
-            </ToolbarButton>
+            {canEdit && (
+              <ToolbarButton icon="document" disabled={busy} onClick={() => run(() => actions.duplicate(quote))}>
+                Duplicate
+              </ToolbarButton>
+            )}
             <ToolbarButton icon="chart" onClick={() => window.print()}>
               Print / PDF
             </ToolbarButton>
@@ -100,8 +119,15 @@ export function QuoteView({ id }: { id: string }) {
           <p className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
             <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
             <span>
-              This quotation expired on {formatDate(quote.validUntil)}. <Link href={`/quotations/${quote.id}/edit`} className="font-semibold underline">Edit it</Link> to
-              extend the validity and re-check prices before sending again.
+              This quotation expired on {formatDate(quote.validUntil)}.{" "}
+              {canEdit ? (
+                <>
+                  <Link href={`/quotations/${quote.id}/edit`} className="font-semibold underline">Edit it</Link> to extend the validity and
+                  re-check prices before sending again.
+                </>
+              ) : (
+                "Its agent can extend the validity and re-check prices."
+              )}
             </span>
           </p>
         )}
@@ -219,9 +245,23 @@ const toolbarCls = (primary?: boolean, danger?: boolean) =>
     !primary && !danger && "border border-navy-100 bg-white text-navy-700 hover:bg-navy-50",
   );
 
-function ToolbarButton({ icon, primary, danger, onClick, children }: { icon: IconName; primary?: boolean; danger?: boolean; onClick: () => void; children: ReactNode }) {
+function ToolbarButton({
+  icon,
+  primary,
+  danger,
+  disabled,
+  onClick,
+  children,
+}: {
+  icon: IconName;
+  primary?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
-    <button type="button" onClick={onClick} className={toolbarCls(primary, danger)}>
+    <button type="button" onClick={onClick} disabled={disabled} className={cn(toolbarCls(primary, danger), "disabled:cursor-wait disabled:opacity-60")}>
       <Icon name={icon} size={16} className={primary ? "text-gold-300" : undefined} /> {children}
     </button>
   );

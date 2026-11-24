@@ -8,13 +8,12 @@ import { compactPhone } from "@/lib/customer-validation";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatCurrency, formatDate, formatMoney } from "@/lib/format";
 import { FollowUpChip, PriorityBadge, SourceLabel, StageBadge } from "./lead-ui";
-import { displayStatus, useQuotations } from "@/lib/quote-store";
+import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
 
-// Quotations still run on demo data whose lead codes can match real leads. Until that
-// module reads the database, the panel shows a note instead of mixing in demo quotes.
-const QUOTATIONS_CONNECTED = false;
+// Quotations come from the database (shared list), so the panel shows this lead's real quotations.
+const QUOTATIONS_CONNECTED = true;
 
 export function LeadDetails({
   lead,
@@ -225,14 +224,16 @@ export function LeadDetails({
 
 function LeadQuotes({ lead, today }: { lead: Lead; today: string | null }) {
   const { quotes } = useQuotations();
+  const { access } = useQuoteData();
   const mine = quotes.filter(
     (q) => (q.recipient.kind === "lead" && q.recipient.id === lead.id) || (lead.customerId && q.recipient.id === lead.customerId),
   );
+  if (!access.canView) return null; // support agents don't see quotations
   return (
     <Section
       title={`Quotations${mine.length ? ` (${mine.length})` : ""}`}
       action={
-        lead.stage !== "Lost" && (
+        access.canEdit && lead.stage !== "Lost" && (
           <Link
             href={`/quotations/new?lead=${lead.id}`}
             className="inline-flex items-center gap-1 text-sm font-semibold text-sky-brand-dark hover:text-navy-900"
