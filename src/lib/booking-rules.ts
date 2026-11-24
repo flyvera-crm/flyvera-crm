@@ -43,26 +43,25 @@ export function bookingMoney(b: Booking) {
 
 /* ── Refunds (cancelled bookings) ── */
 
-export type RefundState = "To settle" | "Refunded" | "Kept as fee" | "Nothing paid";
+export type RefundState = "To settle" | "Refund requested" | "Refunded" | "Kept as fee" | "Nothing paid";
 
 export function refundState(b: Booking): RefundState | null {
   if (b.status !== "Cancelled") return null;
   const { paid, refunded } = bookingMoney(b);
+  // A request waiting for Finance (requested or approved, not yet paid).
+  if (b.refundRequests?.some((r) => r.status === "Requested" || r.status === "Approved")) return "Refund requested";
   if (paid <= 0) return refunded > 0 ? "Refunded" : "Nothing paid";
+  // Settled with money still held: the rest is kept as a cancellation fee.
   return b.refundSettled ? "Kept as fee" : "To settle";
 }
 
-export function validateRefund(v: { amount: string; date: string }, b: Booking, today: string) {
-  const errors: Partial<Record<"amount" | "date", string>> = {};
-  const amount = Number(v.amount.replace(/[,\s$]/g, ""));
-  const { paid } = bookingMoney(b);
-  if (!v.amount.trim()) errors.amount = "Enter the amount refunded.";
-  else if (!Number.isFinite(amount) || amount <= 0) errors.amount = "Enter an amount above 0.";
-  else if (Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6) errors.amount = "Use at most 2 decimal places.";
-  else if (amount > paid + 0.001) errors.amount = `You can refund at most what was paid (${paid.toFixed(2)}).`;
-  if (!v.date) errors.date = "Enter the refund date.";
-  else if (v.date > today) errors.date = "The refund date can't be in the future.";
-  return errors;
+/** Money that can still be refunded: received, minus refunds paid or still pending. */
+export function refundableAmount(b: Booking) {
+  const { received, refunded } = bookingMoney(b);
+  const pending = (b.refundRequests ?? [])
+    .filter((r) => r.status === "Requested" || r.status === "Approved")
+    .reduce((s, r) => s + r.amount, 0);
+  return Math.max(Math.round((received - refunded - pending) * 100) / 100, 0);
 }
 
 /* ── Supplier payments ── */

@@ -8,7 +8,7 @@ import { TicketingPanel } from "@/components/tickets/TicketingPanel";
 import type { Invoice } from "@/types/invoices";
 import { InvoicesCard } from "@/components/invoices/InvoicesCard";
 import { useBookingData, useBookings } from "@/lib/booking-store";
-import { BOOKING_FLOW, bookingMoney, daysBetween, isRefund, nextStep, paymentState, refundState } from "@/lib/booking-rules";
+import { BOOKING_FLOW, bookingMoney, daysBetween, isRefund, nextStep, paymentState, refundableAmount, refundState } from "@/lib/booking-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
 import { QUOTE_ITEM_TYPES, LOW_MARGIN_PERCENT } from "@/config/quote-options";
 import { compactPhone } from "@/lib/customer-validation";
@@ -19,7 +19,9 @@ import { Icon, type IconName } from "@/components/icons";
 import { cn, formatDate, formatMoney } from "@/lib/format";
 import { BookingStatusBadge, PaymentBadge, TimingChip } from "./booking-ui";
 import { useBookingActions } from "./use-booking-actions";
-import { CancelModal, EditPaymentModal, RecordPaymentModal, RefundModal } from "./PaymentModals";
+import { CancelModal, EditPaymentModal, RecordPaymentModal } from "./PaymentModals";
+import { RefundRequestModal } from "./RefundModals";
+import { RefundRequestsList } from "./RefundRequestsList";
 
 export function BookingView({
   id,
@@ -37,7 +39,7 @@ export function BookingView({
   const [busy, startBusy] = useTransition();
   const [paying, setPaying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [refunding, setRefunding] = useState(false);
+  const [refunding, setRefunding] = useState<"request" | "record" | null>(null);
   const [correcting, setCorrecting] = useState<BookingPayment | null>(null);
   const b = bookings.find((x) => x.id === id);
 
@@ -49,6 +51,10 @@ export function BookingView({
   const closed = b.status === "Cancelled" || b.status === "Completed";
   const state = paymentState(b, today);
   const refund = refundState(b);
+  const refundable = refundableAmount(b);
+  const pendingRefund = (b.refundRequests ?? []).filter((r) => r.status === "Requested" || r.status === "Approved").reduce((s, r) => s + r.amount, 0);
+  // A request can be made while money is left to refund and it hasn't been kept as a fee.
+  const canAskRefund = access.canRequestRefunds && b.status === "Cancelled" && refundable > 0 && (refund === "To settle" || refund === "Refund requested");
   const nights = b.returnDate ? daysBetween(b.departDate, b.returnDate) : null;
   const confirmedCount = b.services.filter((s) => s.ref).length;
   const showMoney = access.canSeeMoney;
@@ -141,29 +147,41 @@ export function BookingView({
               {showMoney && refund === "To settle" && <> The customer has paid {formatMoney(m.paid)} — refund it or keep it as a fee.</>}
               {showMoney && refund === "Kept as fee" && <> {formatMoney(m.paid)} kept as a cancellation fee.</>}
               {showMoney && refund === "Refunded" && <> {formatMoney(m.refunded)} refunded in full.</>}
+              {showMoney && refund === "Refund requested" && <> Refund of {formatMoney(pendingRefund)} waiting for Finance.</>}
             </span>
           </p>
-          {refund === "To settle" &&
-            (access.canRecordMoney ? (
-              <div className="flex shrink-0 gap-2">
+          {(canAskRefund || (refund === "To settle" && access.canRecordMoney)) && (
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {canAskRefund && (
                 <button
-                  onClick={() => setRefunding(true)}
+                  onClick={() => setRefunding("request")}
                   disabled={busy}
                   className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
                 >
-                  Record refund
+                  Request refund
                 </button>
-                <button
-                  onClick={() => run(() => actions.keepAsFee(b))}
-                  disabled={busy}
-                  className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
-                >
-                  Keep as fee
-                </button>
-              </div>
-            ) : (
-              showMoney && <span className="shrink-0 text-xs font-medium">Finance will settle the refund.</span>
-            ))}
+              )}
+              {refund === "To settle" && access.canRecordMoney && (
+                <>
+                  <button
+                    onClick={() => setRefunding("record")}
+                    disabled={busy}
+                    title="The money has already been sent — record it in one step (no separate approval)"
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                  >
+                    Record refund sent
+                  </button>
+                  <button
+                    onClick={() => run(() => actions.keepAsFee(b))}
+                    disabled={busy}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                  >
+                    Keep as fee
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <ol className="grid grid-cols-4 gap-2" aria-label="Booking progress">
@@ -328,6 +346,14 @@ export function BookingView({
             </Card>
           )}
 
+          {/* ── Refund requests (migration 18) ── */}
+          {showMoney && (b.refundRequests?.length ?? 0) > 0 && (
+            <Card>
+              <CardHeader title="Refunds" />
+              <RefundRequestsList booking={b} access={access} today={today} />
+            </Card>
+          )}
+
           {/* ── Ticketing: passengers, reservations & flights, tickets, documents ── */}
           {ticketing && <TicketingPanel booking={b} data={ticketing} today={today} />}
         </div>
@@ -414,13 +440,16 @@ export function BookingView({
         />
       )}
       {refunding && today && (
-        <RefundModal
+        <RefundRequestModal
           booking={b}
+          tickets={ticketing?.tickets}
           today={today}
-          onClose={() => setRefunding(false)}
+          mode={refunding}
+          onClose={() => setRefunding(null)}
           onSave={(v) => {
-            setRefunding(false);
-            run(() => actions.recordRefund(b, v));
+            const mode = refunding;
+            setRefunding(null);
+            run(() => (mode === "record" ? actions.recordPaidRefund(b, v) : actions.requestRefund(b, v)));
           }}
         />
       )}

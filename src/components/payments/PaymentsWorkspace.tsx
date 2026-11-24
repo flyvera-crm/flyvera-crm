@@ -19,7 +19,10 @@ import { Badge } from "@/components/ui/Badge";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatCurrency, formatDate, formatDayMonth, formatMoney } from "@/lib/format";
 import { PaidBar } from "@/components/bookings/booking-ui";
-import { RecordPaymentModal, RefundModal } from "@/components/bookings/PaymentModals";
+import { RecordPaymentModal } from "@/components/bookings/PaymentModals";
+import { RefundRequestModal } from "@/components/bookings/RefundModals";
+import { RefundRequestsList } from "@/components/bookings/RefundRequestsList";
+import type { BookingAccess } from "@/lib/data/bookings";
 import { useBookingActions } from "@/components/bookings/use-booking-actions";
 
 type Tab = "received" | "due" | "refunds" | "suppliers";
@@ -37,6 +40,10 @@ export function PaymentsWorkspace() {
   const dues = useMemo(() => customerDues(bookings, today), [bookings, today]);
   const payables = useMemo(() => supplierPayables(bookings), [bookings]);
   const toSettle = bookings.filter((b) => refundState(b) === "To settle");
+  // Refund requests waiting for a decision or for the money to be sent (migration 18).
+  const pending = bookings.filter((b) => b.refundRequests?.some((r) => r.status === "Requested" || r.status === "Approved"));
+  const pendingCount = pending.reduce((n, b) => n + b.refundRequests!.filter((r) => r.status === "Requested" || r.status === "Approved").length, 0);
+  const refundsWaiting = pendingCount + toSettle.length;
 
   const month = today?.slice(0, 7);
   const receivedThisMonth = month ? entries.filter((e) => e.payment.date.startsWith(month)).reduce((s, e) => s + e.signedAmount, 0) : 0;
@@ -47,7 +54,7 @@ export function PaymentsWorkspace() {
   const tabs: { id: Tab; label: string; count?: number; alert?: boolean }[] = [
     { id: "received", label: "Received", count: entries.length },
     { id: "due", label: "Due from customers", count: dues.length, alert: overdue.length > 0 },
-    { id: "refunds", label: "Refunds", count: toSettle.length, alert: toSettle.length > 0 },
+    { id: "refunds", label: "Refunds", count: refundsWaiting, alert: refundsWaiting > 0 },
     // Supplier payments are visible to admin, finance and ticketing only.
     ...(access.canSeeSuppliers ? [{ id: "suppliers" as const, label: "Supplier payments", count: payables.length }] : []),
   ];
@@ -111,6 +118,9 @@ export function PaymentsWorkspace() {
         )}
         {tab === "refunds" && (
           <RefundsTab
+            pending={pending}
+            access={access}
+            today={today}
             toSettle={toSettle}
             refunds={entries.filter((e) => e.payment.kind === "refund")}
             onRefund={canRecord ? (b) => setRefunding(b) : undefined}
@@ -143,12 +153,13 @@ export function PaymentsWorkspace() {
         />
       )}
       {refunding && today && (
-        <RefundModal
+        <RefundRequestModal
           booking={refunding}
           today={today}
+          mode="record"
           onClose={() => setRefunding(null)}
           onSave={(v) => {
-            void actions.recordRefund(refunding, v);
+            void actions.recordPaidRefund(refunding, v);
             setRefunding(null);
           }}
         />
@@ -409,11 +420,17 @@ function DueTab({
 }
 
 function RefundsTab({
+  pending,
+  access,
+  today,
   toSettle,
   refunds,
   onRefund,
   onKeep,
 }: {
+  pending: Booking[];
+  access: BookingAccess;
+  today: string | null;
   toSettle: Booking[];
   refunds: ReturnType<typeof ledgerEntries>;
   /** Absent for roles that don't settle refunds. */
@@ -422,8 +439,27 @@ function RefundsTab({
 }) {
   return (
     <>
+      {pending.length > 0 && (
+        <div className="border-b border-navy-50">
+          <p className="px-6 pt-4 text-xs font-semibold uppercase tracking-wider text-navy-400">
+            {access.canRecordMoney ? "Refund requests waiting for you" : "Refund requests waiting for Finance"}
+          </p>
+          {pending.map((b) => (
+            <RefundRequestsList
+              key={b.id}
+              booking={b}
+              access={access}
+              today={today}
+              showBooking
+              requests={b.refundRequests!.filter((r) => r.status === "Requested" || r.status === "Approved")}
+            />
+          ))}
+        </div>
+      )}
       {toSettle.length === 0 ? (
-        <Empty icon="check" title="No refunds to settle" text="Every cancelled booking has been refunded or its payment kept as a fee." />
+        pending.length === 0 && (
+          <Empty icon="check" title="No refunds to settle" text="Every cancelled booking has been refunded or its payment kept as a fee." />
+        )
       ) : (
         <ul className="divide-y divide-navy-50">
           {toSettle.map((b) => (
@@ -440,12 +476,12 @@ function RefundsTab({
                 </p>
               </div>
               {onKeep && onRefund && (
-                <div className="flex gap-2">
+                <div className="flex gap-2" title="Record refund sent: the money has already gone back — saved without a separate approval">
                   <button onClick={() => onKeep(b)} className="rounded-xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50">
                     Keep as fee
                   </button>
                   <button onClick={() => onRefund(b)} className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700">
-                    Record refund
+                    Record refund sent
                   </button>
                 </div>
               )}

@@ -4,7 +4,7 @@
 // support agents see bookings but no prices or payments; sales see their customers' bookings.
 import { cache } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Booking, BookingStatus, PaymentMethod, QuoteItemType } from "@/types/crm";
+import type { Booking, BookingStatus, PaymentMethod, QuoteItemType, RefundCategory, RefundRequest } from "@/types/crm";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser, type AppRole } from "@/lib/auth";
 import { agentName, getTeam, type Team } from "@/lib/data/team";
@@ -24,6 +24,11 @@ export type BookingAccess = {
   canRecordMoney: boolean;
   /** See which suppliers have been paid (admin, finance, ticketing). */
   canSeeSuppliers: boolean;
+  /** Ask for a refund on a cancelled booking (sales for their bookings, ticketing, finance, admin). */
+  canRequestRefunds: boolean;
+  /** The signed-in user (requests they made; separation of duties for approvals). */
+  me: string;
+  isAdmin: boolean;
 };
 
 // Named foreign keys, so the API never has to guess which link is meant.
@@ -35,7 +40,8 @@ export const BOOKING_COLUMNS =
   "services:booking_services!booking_services_booking_id_organization_id_fkey(id, position, service_type, description, quantity, unit_price, cost, supplier_ref), " +
   "events:booking_events!booking_events_booking_id_organization_id_fkey(body, occurred_at), " +
   "payments:payments!payments_booking_id_organization_id_fkey(id, sequence_no, amount, method, received_on, note, reference, created_at, updated_at), " +
-  "refunds:refunds!refunds_booking_id_organization_id_fkey(id, sequence_no, amount, method, status, paid_on, note), " +
+  "refunds:refunds!refunds_booking_id_organization_id_fkey(id, sequence_no, reference_number, amount, requested_amount, method, status, paid_on, note, " +
+  "reason, reason_category, decision_note, requested_by, approved_by, rejected_by, withdrawn_at, payment_reference, recorded_directly, created_at), " +
   // For the "Issue tickets" step: who's travelling and who holds an issued ticket.
   "pax:passengers!passengers_booking_id_organization_id_fkey(id), " +
   "tix:tickets!tickets_booking_id_organization_id_fkey(passenger_id, status)";
@@ -91,11 +97,23 @@ export type BookingRow = {
   refunds: {
     id: string;
     sequence_no: number;
+    reference_number: string;
     amount: number | string;
+    requested_amount: number | string | null;
     method: PaymentMethod;
     status: "Requested" | "Approved" | "Paid" | "Rejected";
     paid_on: string | null;
     note: string | null;
+    reason: string | null;
+    reason_category: RefundCategory | null;
+    decision_note: string | null;
+    requested_by: string | null;
+    approved_by: string | null;
+    rejected_by: string | null;
+    withdrawn_at: string | null;
+    payment_reference: string | null;
+    recorded_directly: boolean | null;
+    created_at: string;
   }[] | null;
   pax: { id: string }[] | null;
   tix: { passenger_id: string; status: string }[] | null;
@@ -150,6 +168,27 @@ export function mapBooking(
       note: r.note ?? undefined,
       kind: "refund" as const,
     }));
+  const name = (id: string | null) => (id ? agentName(team, id) : "—");
+  const refundRequests: RefundRequest[] = [...(row.refunds ?? [])]
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+    .map((r) => ({
+      dbId: r.id,
+      reference: r.reference_number,
+      status: r.status === "Rejected" && r.withdrawn_at ? "Withdrawn" : r.status,
+      amount: Number(r.amount),
+      requestedAmount: Number(r.requested_amount ?? r.amount),
+      method: r.method,
+      category: r.reason_category ?? undefined,
+      details: r.reason ?? r.note ?? undefined,
+      requestedById: r.requested_by ?? undefined,
+      requestedByName: name(r.requested_by),
+      requestedOn: r.created_at.slice(0, 10),
+      decisionNote: r.decision_note ?? undefined,
+      decidedByName: r.rejected_by ? name(r.rejected_by) : r.approved_by ? name(r.approved_by) : undefined,
+      paidOn: r.paid_on ?? undefined,
+      paymentReference: r.payment_reference ?? undefined,
+      recordedDirectly: Boolean(r.recorded_directly),
+    }));
 
   return {
     id: row.code,
@@ -196,6 +235,7 @@ export function mapBooking(
       .sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))
       .map((e) => ({ date: e.occurred_at.slice(0, 10), text: e.body })),
     moneyHidden,
+    refundRequests: moneyHidden ? [] : refundRequests,
     ticketing: {
       visible: ticketsVisible,
       passengers: (row.pax ?? []).length,
@@ -215,9 +255,12 @@ const SUPPLIER_ROLES: AppRole[] = ["admin", "finance_manager", "ticketing_agent"
 const TICKETING_VIEW_ROLES: AppRole[] = ["admin", "ticketing_agent", "sales_manager", "sales_agent"];
 const ticketsVisible = (role: AppRole | undefined) => Boolean(role && TICKETING_VIEW_ROLES.includes(role));
 
-export function bookingAccess(role: AppRole | undefined): BookingAccess {
+export function bookingAccess(role: AppRole | undefined, me = ""): BookingAccess {
   const has = (roles: AppRole[]) => Boolean(role && roles.includes(role));
   return {
+    canRequestRefunds: has(["admin", "finance_manager", "ticketing_agent", "sales_manager", "sales_agent"]),
+    me,
+    isAdmin: role === "admin",
     canView: has(ALL_ROLES),
     canSeeMoney: has(MONEY_ROLES),
     canCreate: has(CREATE_ROLES),
@@ -243,7 +286,7 @@ async function supplierTransactions(supabase: SupabaseClient, access: BookingAcc
 /** One booking, freshly read (used by Server Actions to validate against the current state). */
 export async function loadBooking(supabase: SupabaseClient, dbId: string): Promise<Booking | null> {
   const user = await getCurrentUser();
-  const access = bookingAccess(user.membership?.role);
+  const access = bookingAccess(user.membership?.role, user.id);
   const { data } = await supabase.from("bookings").select(BOOKING_COLUMNS).eq("id", dbId).maybeSingle<BookingRow>();
   if (!data) return null;
   const [team, supplier] = await Promise.all([getTeam(), supplierTransactions(supabase, access, [dbId])]);
@@ -254,7 +297,7 @@ export async function loadBooking(supabase: SupabaseClient, dbId: string): Promi
 export const getBookingData = cache(async (): Promise<{ bookings: Booking[]; access: BookingAccess }> => {
   const user = await getCurrentUser();
   const membership = user.membership;
-  const access = bookingAccess(membership?.role);
+  const access = bookingAccess(membership?.role, user.id);
   if (!membership || !access.canView) return { bookings: [], access };
 
   const supabase = await createClient();

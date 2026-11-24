@@ -109,6 +109,31 @@ export type Booking = {
    * roles that can't see passengers or tickets — they can't complete the ticketing step.
    */
   ticketing?: { visible: boolean; passengers: number; ticketedPassengers: number };
+  /** Refund requests on this booking, newest last (migration 18). */
+  refundRequests?: RefundRequest[];
+};
+
+export type RefundRequestStatus = "Requested" | "Approved" | "Paid" | "Rejected" | "Withdrawn";
+export type RefundCategory = "Cancellation" | "Airline refund" | "Schedule change" | "Duplicate payment" | "Other";
+
+export type RefundRequest = {
+  dbId: string;
+  reference: string; // RF-10477-1
+  status: RefundRequestStatus;
+  amount: number; // approved / paid amount (may be less than requested)
+  requestedAmount: number;
+  method: PaymentMethod;
+  category?: RefundCategory;
+  details?: string;
+  requestedById?: string;
+  requestedByName: string;
+  requestedOn: string; // ISO date
+  decisionNote?: string;
+  decidedByName?: string;
+  paidOn?: string;
+  paymentReference?: string;
+  /** Recorded by Finance in one step (money already sent) — no separate approval. */
+  recordedDirectly: boolean;
 };
 
 export type Flight = {

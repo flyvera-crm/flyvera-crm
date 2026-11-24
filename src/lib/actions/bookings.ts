@@ -20,7 +20,6 @@ import {
   STATUS_EVENT,
   validatePayment,
   validatePaymentCorrection,
-  validateRefund,
 } from "@/lib/booking-rules";
 import { formatMoney } from "@/lib/format";
 
@@ -192,42 +191,7 @@ export async function correctPayment(bookingDbId: unknown, paymentDbId: unknown,
   return done(supabase, booking.dbId!);
 }
 
-/** Money returned to the customer after a cancellation; whatever isn't refunded is kept as a fee. */
-export async function recordRefund(bookingDbId: unknown, raw: unknown): Promise<BookingResult> {
-  const v = paymentValues(raw);
-  if (!v) return { ok: false, message: "The refund couldn't be read. Try again." };
-  const ctx = await withBooking(bookingDbId);
-  if ("message" in ctx) return { ok: false, message: ctx.message };
-  const { supabase, orgId, booking } = ctx;
-  if (refundState(booking) !== "To settle") return { ok: false, message: "This booking has no refund to settle." };
-  const errors = validateRefund(v, booking, today());
-  const first = Object.values(errors)[0];
-  if (first) return { ok: false, message: first };
-
-  const amount = amountOf(v.amount);
-  const user = await getCurrentUser();
-  const { error } = await supabase.from("refunds").insert({
-    organization_id: orgId,
-    booking_id: booking.dbId,
-    amount,
-    method: v.method,
-    status: "Paid",
-    paid_on: v.date,
-    approved_by: user.id,
-    approved_at: new Date().toISOString(),
-    note: v.note.trim() || null,
-  });
-  if (error) return { ok: false, message: friendly(error, "record this refund") };
-
-  const kept = Math.round((bookingMoney(booking).paid - amount) * 100) / 100;
-  return update(
-    supabase,
-    orgId,
-    booking,
-    { refund_decision: "Refunded" },
-    `Refund of ${formatMoney(amount)} sent (${v.method})${kept > 0 ? ` — ${formatMoney(kept)} kept as fee` : ""}`,
-  );
-}
+// Refunds (request / approve / pay / record directly) live in src/lib/actions/refunds.ts (migration 18).
 
 /** Cancelled booking: keep what was paid as a cancellation fee. */
 export async function keepAsFee(bookingDbId: unknown): Promise<BookingResult> {

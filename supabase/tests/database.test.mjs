@@ -57,9 +57,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 17 migrations in order on an empty database", () => {
+  it("applies all 18 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 17);
+    assert.equal(files.length, 18);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -217,10 +217,11 @@ describe("3 · Relationships & data integrity", () => {
 
   it("never lets refunds exceed the money received", async () => {
     await asUser(db, USERS.fiona.id, async (q) => {
-      const [r] = await q(`insert into refunds (organization_id, booking_id, amount, method, status, approved_by, approved_at, paid_on)
-                           values ($1, $2, 250, 'Bank transfer', 'Paid', $3, now(), '2026-11-20') returning reference_number`, [ORG, ids["FV-10477"], USERS.fiona.id]);
+      // Since migration 18 refunds are written through the refund functions only.
+      const [{ id }] = await q("select record_paid_refund($1, 250, 'Bank transfer', current_date, 'Cancellation', 'Refund after cancellation', null) as id", [ids["FV-10477"]]);
+      const [r] = await q("select reference_number from refunds where id = $1", [id]);
       assert.equal(r.reference_number, "RF-10477-1");
-      await q.fails(`insert into refunds (organization_id, booking_id, amount, method) values ($1, $2, 51, 'Card')`, [ORG, ids["FV-10477"]], /exceed the amount received/);
+      await q.fails("select request_refund($1, 51, 'Card', 'Other', 'One more refund', null)", [ids["FV-10477"]], /exceed the amount received/);
     });
   });
 
@@ -392,11 +393,11 @@ describe("7 · Role: Sales Agent (Sara)", () => {
 
   it("can request a refund, but only Finance can approve or pay it", async () => {
     await asUser(db, USERS.sara.id, async (q) => {
-      const ok = await q(`insert into refunds (organization_id, booking_id, amount, method, reason) values ($1, $2, 100, 'Card', 'Customer request') returning status`, [ORG, ids["FV-10483"]]);
-      assert.deepEqual(ok, [{ status: "Requested" }]);
+      // Requests go through request_refund() (migration 18) and only on cancelled bookings.
+      await q.fails("select request_refund($1, 100, 'Card', 'Other', 'Customer request', null)", [ids["FV-10483"]], /only be requested on cancelled bookings/);
+      await q.fails("select approve_refund(gen_random_uuid(), 1, null)", [], /Only Finance or an admin/);
       await q.fails(`insert into refunds (organization_id, booking_id, amount, method, status, approved_at, paid_on) values ($1, $2, 100, 'Card', 'Paid', now(), '2026-11-20')`,
-        [ORG, ids["FV-10483"]], /row-level security/);
-      await q.fails(`insert into refunds (organization_id, booking_id, amount, method) values ($1, $2, 100, 'Card')`, [ORG, ids["FV-10481"]], /row-level security/);
+        [ORG, ids["FV-10483"]], /permission denied|row-level security/);
       await q.fails(`insert into payments (organization_id, booking_id, amount, method, received_on) values ($1, $2, 10, 'Card', '2026-11-20')`,
         [ORG, ids["FV-10483"]], /row-level security/);
     });
@@ -459,9 +460,9 @@ describe("9 · Role: Finance Manager (Fiona)", () => {
       const st = await q(`insert into supplier_transactions (organization_id, booking_id, amount, occurred_on, kind) values ($1, $2, 890, '2026-11-20', 'Payment') returning id`,
         [ORG, ids["FV-10481"]]);
       assert.equal(N(st), 1);
-      const [ref] = await q(`insert into refunds (organization_id, booking_id, amount, method) values ($1, $2, 100, 'Card') returning id`, [ORG, ids["FV-10477"]]);
-      const approved = await q("update refunds set status = 'Approved', approved_by = $2, approved_at = now() where id = $1 returning status", [ref.id, USERS.fiona.id]);
-      assert.deepEqual(approved, [{ status: "Approved" }]);
+      const [ref] = await q("select request_refund($1, 100, 'Card', 'Cancellation', 'Deposit back to the customer', null) as id", [ids["FV-10477"]]);
+      assert.equal((await q("select status from refunds where id = $1", [ref.id]))[0].status, "Requested");
+      await q.fails("select approve_refund($1, 100, null)", [ref.id], /someone else in Finance/); // separation of duties
     });
   });
 
@@ -1035,5 +1036,109 @@ describe("16 · Invoices (migration 17)", () => {
       await q.fails("select create_invoice($1, 0, current_date - 1, null)", [b.id], /due date can't be in the past/);
       await q.fails("select create_invoice($1, -5, null, null)", [b.id], /service fee between/);
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("17 · Refund requests (migration 18)", () => {
+  // FV-10477: cancelled, $300 received, Priya's booking (sales).
+  const REQUEST = "select request_refund($1, $2, 'Card', 'Cancellation', $3, null) as id";
+  const switchTo = async (q, user) => {
+    await q("set local role authenticated");
+    await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: user.id })]);
+  };
+
+  it("lets sales request a refund on their cancelled booking, and no one else's", async () => {
+    await asUser(db, USERS.priya.id, async (q) => {
+      const [{ id }] = await q(REQUEST, [ids["FV-10477"], 120, "Customer cancelled, deposit refundable"]);
+      const [r] = await q("select status, amount, requested_amount, reason_category, requested_by from refunds where id = $1", [id]);
+      assert.deepEqual(
+        { ...r, amount: Number(r.amount), requested_amount: Number(r.requested_amount) },
+        { status: "Requested", amount: 120, requested_amount: 120, reason_category: "Cancellation", requested_by: USERS.priya.id },
+      );
+      assert.equal(await count(q, "select 1 from booking_events where booking_id = $1 and body like 'Refund RF-10477-% requested%'", [ids["FV-10477"]]), 1);
+      await q.fails(REQUEST, [ids["FV-10477"], 500, "Asking for more than was paid"], /exceed the amount received/);
+    });
+    await asUser(db, USERS.sara.id, (q) => q.fails(REQUEST, [ids["FV-10477"], 10, "Not my booking"], /can't request refunds on this booking/));
+    await asUser(db, USERS.sam.id, (q) => q.fails(REQUEST, [ids["FV-10477"], 10, "Support can't ask"], /can't request refunds on this booking/));
+    await asUser(db, USERS.leo.id, (q) => q.fails(REQUEST, [ids["FV-10481"], 10, "Active booking refund"], /only be requested on cancelled bookings/));
+  });
+
+  it("approves (less, with a note), then pays — each step logged with who and why", async () => {
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.priya);
+      const [{ id }] = await q(REQUEST, [ids["FV-10477"], 120, "Customer cancelled, deposit refundable"]);
+      await switchTo(q, USERS.fiona);
+      await q.fails("select approve_refund($1, 150, null)", [id], /requested amount or less/);
+      await q.fails("select approve_refund($1, 100, null)", [id], /Explain why less than requested/);
+      await q("select approve_refund($1, 100, 'Airline keeps a $20 penalty')", [id]);
+      await q.fails("select pay_refund($1, current_date + 1, 'Card', null)", [id], /between the booking date and today/);
+      await q("select pay_refund($1, current_date, 'Bank transfer', 'TRX-5531')", [id]);
+      const [r] = await q("select status, amount, approved_by, paid_on, payment_reference, decision_note from refunds where id = $1", [id]);
+      assert.equal(r.status, "Paid");
+      assert.equal(Number(r.amount), 100);
+      assert.equal(r.approved_by, USERS.fiona.id);
+      assert.equal(r.payment_reference, "TRX-5531");
+      assert.equal(r.decision_note, "Airline keeps a $20 penalty");
+      const [b] = await q("select refund_decision from bookings where id = $1", [ids["FV-10477"]]);
+      assert.equal(b.refund_decision, "Refunded");
+      await q("reset role");
+      const [log] = await q(
+        "select old_data->>'amount' old_amount, new_data->>'amount' new_amount, context->>'reason' reason from audit_logs where table_name = 'refunds' and record_id = $1 and new_data->>'status' = 'Approved'",
+        [id]);
+      assert.equal(Number(log.old_amount), 120);
+      assert.equal(Number(log.new_amount), 100);
+      assert.equal(log.reason, "Airline keeps a $20 penalty");
+    });
+  });
+
+  it("separates duties: a finance requester can't approve or pay their own refund (admins can)", async () => {
+    await asUser(db, USERS.fiona.id, async (q) => {
+      const [{ id }] = await q(REQUEST, [ids["FV-10477"], 50, "Duplicate card charge"]);
+      await q.fails("select approve_refund($1, 50, null)", [id], /someone else in Finance/);
+    });
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const [{ id }] = await q(REQUEST, [ids["FV-10477"], 50, "Small agency: admin does it all"]);
+      await q("select approve_refund($1, 50, null)", [id]);
+      await q("select pay_refund($1, current_date, 'Card', null)", [id]);
+      assert.equal((await q("select status from refunds where id = $1", [id]))[0].status, "Paid");
+    });
+  });
+
+  it("rejects with a reason, and lets only the requester withdraw a pending request", async () => {
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.priya);
+      const [{ id: a }] = await q(REQUEST, [ids["FV-10477"], 60, "First request for the deposit"]);
+      const [{ id: b }] = await q(REQUEST, [ids["FV-10477"], 40, "Second request for the rest"]);
+      await switchTo(q, USERS.fiona);
+      await q.fails("select reject_refund($1, '')", [a], /reason/);
+      await q("select reject_refund($1, 'Deposit was non-refundable')", [a]);
+      await q.fails("select withdraw_refund($1)", [b], /Only the person who requested/);
+      await switchTo(q, USERS.priya);
+      await q("select withdraw_refund($1)", [b]);
+      await q.fails("select withdraw_refund($1)", [b], /Only pending requests/);
+      const rows = await q("select status, rejected_by, withdrawn_by, decision_note from refunds where id in ($1, $2) order by requested_amount desc", [a, b]);
+      assert.deepEqual(rows, [
+        { status: "Rejected", rejected_by: USERS.fiona.id, withdrawn_by: null, decision_note: "Deposit was non-refundable" },
+        { status: "Rejected", rejected_by: null, withdrawn_by: USERS.priya.id, decision_note: "Withdrawn by the requester" },
+      ]);
+      // Rejected / withdrawn requests no longer hold money back: a new request for the full amount fits.
+      assert.ok((await q(REQUEST, [ids["FV-10477"], 300, "Full refund after review"]))[0].id);
+    });
+  });
+
+  it("records a refund finance already sent in one step, clearly marked, and blocks direct writes", async () => {
+    await asUser(db, USERS.fiona.id, async (q) => {
+      const [{ id }] = await q("select record_paid_refund($1, 75, 'Card', current_date, 'Airline refund', 'Airline refunded the taxes', 'CARD-77') as id", [ids["FV-10477"]]);
+      const [r] = await q("select status, recorded_directly, requested_by, approved_by from refunds where id = $1", [id]);
+      assert.deepEqual(r, { status: "Paid", recorded_directly: true, requested_by: USERS.fiona.id, approved_by: USERS.fiona.id });
+      assert.equal(await count(q, "select 1 from booking_events where booking_id = $1 and body like '%recorded directly, no separate approval%'", [ids["FV-10477"]]), 1);
+      await q.fails("insert into refunds (organization_id, booking_id, amount, method) values ($1, $2, 5, 'Card')", [ORG, ids["FV-10477"]], /permission denied/);
+      await q.fails("update refunds set amount = 1 where id = $1", [id], /permission denied/);
+    });
+    for (const user of [USERS.priya, USERS.leo, USERS.sam]) {
+      await asUser(db, user.id, (q) =>
+        q.fails("select record_paid_refund($1, 5, 'Card', current_date, 'Other', 'Trying to pay out', null)", [ids["FV-10477"]], /Only Finance or an admin/));
+    }
   });
 });

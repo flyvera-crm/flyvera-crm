@@ -9,7 +9,6 @@ import {
   PAYMENT_METHODS,
   validatePayment,
   validatePaymentCorrection,
-  validateRefund,
   type PaymentCorrectionValues,
   type PaymentFormValues,
 } from "@/lib/booking-rules";
@@ -161,101 +160,6 @@ export function CancelModal({ open, booking, onClose, onConfirm }: { open: boole
   );
 }
 
-
-export type RefundFormValues = { amount: string; date: string; method: PaymentMethod; note: string };
-
-/** Money going back to the customer after a cancellation. */
-export function RefundModal({
-  booking,
-  today,
-  onClose,
-  onSave,
-}: {
-  booking: Booking;
-  today: string;
-  onClose: () => void;
-  onSave: (v: RefundFormValues) => void;
-}) {
-  const { paid } = bookingMoney(booking);
-  const [v, setV] = useState<RefundFormValues>({ amount: String(paid), date: today, method: "Bank transfer", note: "" });
-  const [submitted, setSubmitted] = useState(false);
-  const errors = validateRefund(v, booking, today);
-  const err = (f: "amount" | "date") => (submitted ? errors[f] : undefined);
-
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitted(true);
-    if (Object.keys(errors).length) return;
-    onSave(v);
-  }
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title="Record refund"
-      description={
-        <>
-          {booking.id} · {booking.customerName} has paid <span className="font-semibold text-navy-900">{formatMoney(paid)}</span>. Refund
-          all of it, or part (the rest is kept as a cancellation fee).
-        </>
-      }
-      footer={
-        <>
-          <button onClick={onClose} className="rounded-xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50">
-            Cancel
-          </button>
-          <button type="submit" form="refund-form" className="rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
-            Save refund
-          </button>
-        </>
-      }
-    >
-      <form id="refund-form" onSubmit={submit} noValidate className="grid grid-cols-2 gap-4">
-        <Field id="refundAmount" label="Amount refunded (USD)" required error={err("amount")} className="col-span-2 sm:col-span-1">
-          <div className="relative">
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-navy-400">$</span>
-            <input
-              {...fieldA11y("refundAmount", { error: err("amount") })}
-              value={v.amount}
-              onChange={(e) => setV({ ...v, amount: e.target.value })}
-              inputMode="decimal"
-              className={inputClass(!!err("amount"), "h-11 pl-7")}
-            />
-          </div>
-        </Field>
-        <Field id="refundDate" label="Date refunded" required error={err("date")} className="col-span-2 sm:col-span-1">
-          <input
-            {...fieldA11y("refundDate", { error: err("date") })}
-            type="date"
-            max={today}
-            value={v.date}
-            onChange={(e) => setV({ ...v, date: e.target.value })}
-            className={inputClass(!!err("date"))}
-          />
-        </Field>
-        <Field id="refundMethod" label="Refunded by" required className="col-span-2 sm:col-span-1">
-          <div className="relative">
-            <select
-              id="refundMethod"
-              value={v.method}
-              onChange={(e) => setV({ ...v, method: e.target.value as PaymentMethod })}
-              className={inputClass(false, "h-11 appearance-none pr-9")}
-            >
-              {PAYMENT_METHODS.map((m) => (
-                <option key={m}>{m}</option>
-              ))}
-            </select>
-            <Icon name="chevronDown" size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-navy-400" />
-          </div>
-        </Field>
-        <Field id="refundNote" label="Note" className="col-span-2 sm:col-span-1">
-          <input id="refundNote" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} placeholder="e.g. Minus $50 admin fee" className={inputClass(false)} />
-        </Field>
-      </form>
-    </Modal>
-  );
-}
 
 /**
  * Finance / admin: correct a payment that was recorded wrongly (typo in the amount, wrong date

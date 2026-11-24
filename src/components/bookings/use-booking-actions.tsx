@@ -2,10 +2,13 @@
 
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
-import type { Booking, Customer, Quotation } from "@/types/crm";
+import type { Booking, Customer, Quotation, RefundRequest } from "@/types/crm";
 import { useBookingData, useBookings } from "@/lib/booking-store";
 import { useLeadData } from "@/lib/lead-store";
 import * as server from "@/lib/actions/bookings";
+import * as refunds from "@/lib/actions/refunds";
+import type { ApproveValues, PayValues } from "@/lib/refund-rules";
+import type { RecordRefundValues } from "./RefundModals";
 import { bookingMoney, STATUS_EVENT, type PaymentCorrectionValues, type PaymentFormValues } from "@/lib/booking-rules";
 import { compactPhone } from "@/lib/customer-validation";
 import { splitName } from "@/lib/lead-validation";
@@ -88,11 +91,59 @@ export function useBookingActions() {
     [apply, toast],
   );
 
-  /** Money returned to the customer (after a cancellation). */
-  const recordRefund = useCallback(
-    async (b: Booking, v: PaymentFormValues) => {
-      const saved = apply(await server.recordRefund(b.dbId, v));
-      if (saved) toast({ message: <p>Refund of {formatMoney(Number(v.amount.replace(/[,\s$]/g, "")))} to {b.customerName} recorded.</p> });
+  /* ── Refunds (migration 18): request → approve → pay, or reject / withdraw ── */
+  const money = (v: string) => formatMoney(Math.round(Number(v.replace(/[,s$]/g, "")) * 100) / 100);
+
+  const requestRefund = useCallback(
+    async (b: Booking, v: RecordRefundValues) => {
+      const saved = apply(await refunds.requestRefund(b.dbId, v));
+      if (saved) toast({ message: <p>Refund of {money(v.amount)} requested. Finance will review it.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  /** Finance / admin: a refund already sent, recorded in one step (no separate approval — shown in the history). */
+  const recordPaidRefund = useCallback(
+    async (b: Booking, v: RecordRefundValues) => {
+      const saved = apply(await refunds.recordPaidRefund(b.dbId, v));
+      if (saved) toast({ message: <p>Refund of {money(v.amount)} to {b.customerName} recorded.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const approveRefund = useCallback(
+    async (b: Booking, r: RefundRequest, v: ApproveValues) => {
+      const saved = apply(await refunds.approveRefund(b.dbId, r.dbId, v));
+      if (saved) toast({ message: <p>{r.reference} approved for {money(v.amount)}. Mark it paid once the money is sent.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const rejectRefund = useCallback(
+    async (b: Booking, r: RefundRequest, reason: string) => {
+      const saved = apply(await refunds.rejectRefund(b.dbId, r.dbId, reason));
+      if (saved) toast({ tone: "info", message: <p>{r.reference} rejected.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const withdrawRefund = useCallback(
+    async (b: Booking, r: RefundRequest) => {
+      const saved = apply(await refunds.withdrawRefund(b.dbId, r.dbId));
+      if (saved) toast({ tone: "info", message: <p>Request {r.reference} withdrawn.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const payRefund = useCallback(
+    async (b: Booking, r: RefundRequest, v: PayValues) => {
+      const saved = apply(await refunds.payRefund(b.dbId, r.dbId, v));
+      if (saved) toast({ message: <p>{r.reference}: {formatMoney(r.amount)} sent to {b.customerName}.</p> });
       return Boolean(saved);
     },
     [apply, toast],
@@ -202,5 +253,16 @@ export function useBookingActions() {
     [bookings, customers, getCustomer, leads, openAddForm, router, showSaved, toast, updateLeadStatus],
   );
 
-  return { advance, cancel, recordPayment, correctPayment, recordRefund, keepAsFee, markSupplierPaid, setServiceRef, createFromQuote };
+  return {
+    advance,
+    cancel,
+    recordPayment,
+    correctPayment,
+    requestRefund,
+    recordPaidRefund,
+    approveRefund,
+    rejectRefund,
+    withdrawRefund,
+    payRefund,
+    keepAsFee, markSupplierPaid, setServiceRef, createFromQuote };
 }
