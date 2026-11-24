@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useBookings } from "@/lib/booking-store";
+import { useBookingData, useBookings } from "@/lib/booking-store";
 import { useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { Card } from "@/components/ui/Card";
@@ -13,10 +13,23 @@ import { useBookingActions } from "./use-booking-actions";
 export function NewBooking() {
   const { quotes, hydrated } = useQuotations();
   const { bookings } = useBookings();
+  const { access } = useBookingData();
   const { createFromQuote } = useBookingActions();
   const bookedQuoteIds = new Set(bookings.map((b) => b.quoteId).filter(Boolean));
   const ready = quotes.filter((q) => q.status === "Accepted" && !bookedQuoteIds.has(q.id));
 
+  if (!access.canCreate) {
+    return (
+      <Card className="flex flex-col items-center px-6 py-16 text-center">
+        <Icon name="calendar" size={28} className="text-navy-300" />
+        <p className="mt-4 font-semibold text-navy-900">Your role can&apos;t create bookings</p>
+        <p className="mt-1 max-w-sm text-sm text-navy-400">Bookings are created by sales, ticketing or an admin from accepted quotations.</p>
+        <Link href="/bookings" className="mt-5 rounded-xl bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">
+          All bookings
+        </Link>
+      </Card>
+    );
+  }
   if (!hydrated) return <div className="h-64 animate-pulse rounded-2xl bg-navy-50" aria-busy="true" />;
 
   return (

@@ -11,17 +11,16 @@ import { formatDate, formatMoney } from "@/lib/format";
 
 /** Printable payment receipt (or refund note) for one payment on a booking. */
 export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId: string }) {
-  const { bookings, hydrated } = useBookings();
+  const { bookings } = useBookings();
   const b = bookings.find((x) => x.id === bookingId);
   const p = b?.payments.find((x) => x.id === paymentId);
 
-  if (!b || !p) {
-    if (!hydrated) return <div className="h-96 animate-pulse rounded-2xl bg-navy-50" aria-busy="true" />;
+  if (!b || !p || b.moneyHidden) {
     return (
       <Card className="flex flex-col items-center px-6 py-20 text-center">
         <Icon name="document" size={28} className="text-navy-300" />
         <h1 className="mt-4 text-xl font-semibold text-navy-900">Receipt not found</h1>
-        <p className="mt-2 text-sm text-navy-400">This payment may have been removed, or was recorded in a different browser.</p>
+        <p className="mt-2 text-sm text-navy-400">There&apos;s no such payment on a booking you can see.</p>
         <Link href="/payments" className="mt-6 rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
           All payments
         </Link>
@@ -68,6 +67,12 @@ export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId
               by {p.method}
               {p.note && <> · {p.note}</>}
             </p>
+            {p.corrected && (
+              <p className="mt-2 text-xs text-amber-700">
+                This payment was corrected by Finance after it was first recorded. The original values and the reason are kept in the
+                agency&apos;s audit log.
+              </p>
+            )}
           </div>
 
           <dl className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2">

@@ -3,7 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { Booking, PaymentMethod } from "@/types/crm";
-import { useBookings } from "@/lib/booking-store";
+import { useBookingData, useBookings } from "@/lib/booking-store";
 import { bookingMoney, PAYMENT_METHODS, refundState } from "@/lib/booking-rules";
 import {
   customerDues,
@@ -26,6 +26,8 @@ type Tab = "received" | "due" | "refunds" | "suppliers";
 
 export function PaymentsWorkspace() {
   const { bookings, today, hydrated } = useBookings();
+  const { access } = useBookingData();
+  const canRecord = access.canRecordMoney; // admin & finance record money; others see the ledger
   const actions = useBookingActions();
   const [tab, setTab] = useState<Tab>("received");
   const [paying, setPaying] = useState<Booking | null>(null);
@@ -46,7 +48,8 @@ export function PaymentsWorkspace() {
     { id: "received", label: "Received", count: entries.length },
     { id: "due", label: "Due from customers", count: dues.length, alert: overdue.length > 0 },
     { id: "refunds", label: "Refunds", count: toSettle.length, alert: toSettle.length > 0 },
-    { id: "suppliers", label: "Supplier payments", count: payables.length },
+    // Supplier payments are visible to admin, finance and ticketing only.
+    ...(access.canSeeSuppliers ? [{ id: "suppliers" as const, label: "Supplier payments", count: payables.length }] : []),
   ];
 
   return (
@@ -68,7 +71,12 @@ export function PaymentsWorkspace() {
           icon="alert"
           tone={overdue.length ? "rose" : undefined}
         />
-        <Stat label="Owed to suppliers" value={formatCurrency(owedSuppliers, { compact: true })} hint={`${payables.length} service${payables.length === 1 ? "" : "s"} unpaid`} icon="plane" />
+        <Stat
+          label="Owed to suppliers"
+          value={access.canSeeSuppliers ? formatCurrency(owedSuppliers, { compact: true }) : "—"}
+          hint={access.canSeeSuppliers ? `${payables.length} service${payables.length === 1 ? "" : "s"} unpaid` : "Seen by Finance and Ticketing"}
+          icon="plane"
+        />
       </div>
 
       {hydrated && today && <MonthlyChart data={monthlyNet(entries, today)} />}
@@ -98,19 +106,28 @@ export function PaymentsWorkspace() {
           <DueTab
             dues={dues}
             today={today}
-            onRecord={(b) => setPaying(b)}
+            onRecord={canRecord ? (b) => setPaying(b) : undefined}
           />
         )}
         {tab === "refunds" && (
           <RefundsTab
             toSettle={toSettle}
             refunds={entries.filter((e) => e.payment.kind === "refund")}
-            onRefund={(b) => setRefunding(b)}
-            onKeep={(b) => actions.keepAsFee(b)}
+            onRefund={canRecord ? (b) => setRefunding(b) : undefined}
+            onKeep={canRecord ? (b) => void actions.keepAsFee(b) : undefined}
           />
         )}
-        {tab === "suppliers" && (
-          <SuppliersTab payables={payables} today={today} onPaid={(b, serviceId) => actions.markSupplierPaid(b, serviceId, true)} />
+        {tab === "suppliers" && access.canSeeSuppliers && (
+          <SuppliersTab
+            payables={payables}
+            today={today}
+            onPaid={canRecord ? (b, serviceId) => void actions.markSupplierPaid(b, serviceId, true) : undefined}
+          />
+        )}
+        {!canRecord && (
+          <p className="border-t border-navy-50 px-5 py-3 text-xs text-navy-400 sm:px-6">
+            Payments, refunds and supplier payments are recorded by Finance or an admin.
+          </p>
         )}
       </Card>
 
@@ -120,7 +137,7 @@ export function PaymentsWorkspace() {
           today={today}
           onClose={() => setPaying(null)}
           onSave={(v) => {
-            actions.recordPayment(paying, v);
+            void actions.recordPayment(paying, v);
             setPaying(null);
           }}
         />
@@ -131,7 +148,7 @@ export function PaymentsWorkspace() {
           today={today}
           onClose={() => setRefunding(null)}
           onSave={(v) => {
-            actions.recordRefund(refunding, v);
+            void actions.recordRefund(refunding, v);
             setRefunding(null);
           }}
         />
@@ -333,7 +350,8 @@ function DueTab({
 }: {
   dues: ReturnType<typeof customerDues>;
   today: string | null;
-  onRecord: (b: Booking) => void;
+  /** Absent for roles that don't record payments. */
+  onRecord?: (b: Booking) => void;
 }) {
   if (!dues.length) return <Empty icon="check" title="Nothing to collect" text="Every active booking is paid in full." />;
   return (
@@ -374,12 +392,14 @@ function DueTab({
               >
                 <Icon name="chat" size={15} className="text-green-600" /> Remind
               </a>
-              <button
-                onClick={() => onRecord(b)}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-navy-900 px-3 py-2 text-sm font-semibold text-white hover:bg-navy-800 lg:flex-none"
-              >
-                <Icon name="plus" size={15} className="text-gold-300" /> Record payment
-              </button>
+              {onRecord && (
+                <button
+                  onClick={() => onRecord(b)}
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-navy-900 px-3 py-2 text-sm font-semibold text-white hover:bg-navy-800 lg:flex-none"
+                >
+                  <Icon name="plus" size={15} className="text-gold-300" /> Record payment
+                </button>
+              )}
             </div>
           </li>
         );
@@ -396,8 +416,9 @@ function RefundsTab({
 }: {
   toSettle: Booking[];
   refunds: ReturnType<typeof ledgerEntries>;
-  onRefund: (b: Booking) => void;
-  onKeep: (b: Booking) => void;
+  /** Absent for roles that don't settle refunds. */
+  onRefund?: (b: Booking) => void;
+  onKeep?: (b: Booking) => void;
 }) {
   return (
     <>
@@ -418,14 +439,16 @@ function RefundsTab({
                   · <span className="font-mono text-xs">{b.id}</span> · cancelled: {b.cancelReason ?? "—"}
                 </p>
               </div>
-              <div className="flex gap-2">
-                <button onClick={() => onKeep(b)} className="rounded-xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50">
-                  Keep as fee
-                </button>
-                <button onClick={() => onRefund(b)} className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700">
-                  Record refund
-                </button>
-              </div>
+              {onKeep && onRefund && (
+                <div className="flex gap-2">
+                  <button onClick={() => onKeep(b)} className="rounded-xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50">
+                    Keep as fee
+                  </button>
+                  <button onClick={() => onRefund(b)} className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700">
+                    Record refund
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -458,7 +481,8 @@ function SuppliersTab({
 }: {
   payables: ReturnType<typeof supplierPayables>;
   today: string | null;
-  onPaid: (b: Booking, serviceId: string) => void;
+  /** Absent for roles that don't record supplier payments. */
+  onPaid?: (b: Booking, serviceId: string) => void;
 }) {
   if (!payables.length) return <Empty icon="check" title="All suppliers paid" text="There are no unpaid services on confirmed bookings." />;
   const total = payables.reduce((s, p) => s + p.service.cost, 0);
@@ -489,12 +513,14 @@ function SuppliersTab({
                     {late ? "pay now — was due" : "pay by"} {formatDayMonth(dueDate)}
                   </p>
                 </div>
-                <button
-                  onClick={() => onPaid(b, s.id)}
-                  className="flex items-center gap-1.5 rounded-xl bg-navy-900 px-3 py-2 text-sm font-semibold text-white hover:bg-navy-800"
-                >
-                  <Icon name="check" size={15} className="text-gold-300" strokeWidth={2.5} /> Mark paid
-                </button>
+                {onPaid && (
+                  <button
+                    onClick={() => onPaid(b, s.id)}
+                    className="flex items-center gap-1.5 rounded-xl bg-navy-900 px-3 py-2 text-sm font-semibold text-white hover:bg-navy-800"
+                  >
+                    <Icon name="check" size={15} className="text-gold-300" strokeWidth={2.5} /> Mark paid
+                  </button>
+                )}
               </div>
             </li>
           );

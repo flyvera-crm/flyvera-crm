@@ -26,9 +26,15 @@ export function BookingStatusBadge({ status }: { status: BookingStatus }) {
 }
 
 export function PaymentBadge({ booking, today }: { booking: Booking; today: string | null }) {
+  if (booking.moneyHidden) return null; // this role doesn't see payments
   const state = paymentState(booking, today);
   if (state === "Cancelled") return null;
   return <Badge tone={paymentTone[state]}>{state}</Badge>;
+}
+
+/** The booking total, or "—" for roles that don't see prices (never a misleading $0). */
+export function bookingTotalLabel(booking: Booking) {
+  return booking.moneyHidden ? "—" : formatMoney(bookingMoney(booking).total);
 }
 
 /** Thin progress bar: how much of the total has been paid. */

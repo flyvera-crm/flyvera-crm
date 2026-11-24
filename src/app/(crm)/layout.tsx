@@ -7,6 +7,8 @@ import { getLeadData } from "@/lib/data/leads";
 import { LeadListProvider } from "@/lib/lead-store";
 import { getQuoteData } from "@/lib/data/quotations";
 import { QuoteListProvider } from "@/lib/quote-store";
+import { getBookingData } from "@/lib/data/bookings";
+import { BookingListProvider } from "@/lib/booking-store";
 
 // Every page inside the (crm) folder gets the sidebar + top bar.
 // The "(crm)" folder name is a route group — it does NOT appear in the URL.
@@ -18,14 +20,17 @@ import { QuoteListProvider } from "@/lib/quote-store";
 //                        "Convert to customer") can use them
 //  • LeadListProvider  – leads from Supabase, shared by Leads, Quotations, Bookings and Reports
 //  • QuoteListProvider – quotations from Supabase, shared by Quotations, Customers, Leads, Bookings and Reports
+//  • BookingListProvider – bookings (with payments) from Supabase, shared by Bookings, Payments, Customers,
+//                          Quotations, Dashboard and Reports
 //  • The signed-in user (name, role) for the top bar. Logged-out visitors never
 //    get here: src/proxy.ts sends them to /login, and getCurrentUser() does too.
 export default async function CrmLayout({ children }: LayoutProps<"/">) {
-  const [user, { customers, access }, leadData, quoteData] = await Promise.all([
+  const [user, { customers, access }, leadData, quoteData, bookingData] = await Promise.all([
     getCurrentUser(),
     getCustomerData(),
     getLeadData(),
     getQuoteData(),
+    getBookingData(),
   ]);
   const shellUser = {
     name: user.name,
@@ -39,7 +44,9 @@ export default async function CrmLayout({ children }: LayoutProps<"/">) {
       <CustomersProvider initialCustomers={customers} access={access}>
         <LeadListProvider initialLeads={leadData.leads} access={leadData.access}>
           <QuoteListProvider initialQuotes={quoteData.quotes} access={quoteData.access}>
-            <AppShell user={shellUser}>{children}</AppShell>
+            <BookingListProvider initialBookings={bookingData.bookings} access={bookingData.access}>
+              <AppShell user={shellUser}>{children}</AppShell>
+            </BookingListProvider>
           </QuoteListProvider>
         </LeadListProvider>
       </CustomersProvider>

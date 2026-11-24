@@ -1,16 +1,13 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { BookingView } from "@/components/bookings/BookingView";
-import { bookings } from "@/lib/mock-bookings";
+import { getBookingData } from "@/lib/data/bookings";
 
-// Pre-build each demo booking. Bookings created in the browser are still
-// served (dynamicParams defaults to true) and looked up on the client.
-export function generateStaticParams() {
-  return bookings.map((b) => ({ id: b.id }));
-}
-
+// Bookings come from Supabase. getBookingData() is cached per request, so this
+// shares the query the CRM layout already ran.
 export async function generateMetadata({ params }: PageProps<"/bookings/[id]">): Promise<Metadata> {
   const { id } = await params;
+  const { bookings } = await getBookingData();
   const b = bookings.find((x) => x.id === id);
   return { title: b ? `${b.id} · ${b.title}` : `Booking ${id}` };
 }

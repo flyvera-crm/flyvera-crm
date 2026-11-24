@@ -50,12 +50,17 @@ export type Kpi = {
 export type PaymentMethod = "Card" | "Bank transfer" | "Cash" | "Other";
 
 export type BookingPayment = {
-  id: string; // "p1", "p2"…
+  id: string; // "p1", "p2"… for payments, "r1", "r2"… for refunds (the database's sequence numbers)
   date: string; // ISO
   amount: number; // always positive; refunds are marked with kind
   method: PaymentMethod;
   note?: string;
   kind?: "payment" | "refund"; // default "payment"
+  // Set for payments loaded from the database:
+  dbId?: string;
+  reference?: string;
+  /** true when Finance has corrected this payment since it was recorded (see the booking's history). */
+  corrected?: boolean;
 };
 
 /** A booked service = a quotation line + the supplier's reference once confirmed. */
@@ -92,6 +97,13 @@ export type Booking = {
   cancelReason?: string;
   refundSettled?: boolean; // cancelled: money kept as a fee (no further refund due)
   history: BookingEvent[]; // newest last
+  // Set for bookings loaded from the database:
+  /** Database row id. The readable code (FV-10001) is `id`. */
+  dbId?: string;
+  /** User id of the booking's agent; `agent` holds their display name. */
+  agentId?: string;
+  /** true for roles that may not see prices or payments (support): money figures are blank, not zero. */
+  moneyHidden?: boolean;
 };
 
 export type Flight = {

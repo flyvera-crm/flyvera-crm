@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo, useState, useTransition, type ReactNode } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import type { Customer, CustomerStatus, CustomerTier } from "@/types/crm";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatCurrency, formatDate, formatMoney, formatMonthYear, initials } from "@/lib/format";
-import { addDays, getCustomerTrips, MAX_TRIPS_SHOWN, type Trip, type TripStatus } from "@/lib/customer-history";
+import { addDays } from "@/lib/customer-history";
 import { compactPhone } from "@/lib/customer-validation";
 import { revealPassport } from "@/lib/actions/customers";
 import { todayIso, useCustomers } from "./CustomersProvider";
@@ -16,11 +16,10 @@ import { quoteTotals } from "@/lib/quote-math";
 import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
 import { useBookings } from "@/lib/booking-store";
 import { bookingMoney } from "@/lib/booking-rules";
-import { BookingStatusBadge, PaymentBadge, TimingChip } from "@/components/bookings/booking-ui";
+import { BookingStatusBadge, bookingTotalLabel, PaymentBadge, TimingChip } from "@/components/bookings/booking-ui";
 
 const tierTone: Record<CustomerTier, BadgeTone> = { Platinum: "premium", Gold: "gold", Silver: "neutral", Standard: "info" };
 const statusTone: Record<CustomerStatus, BadgeTone> = { Active: "success", Travelling: "info", Inactive: "neutral" };
-const tripTone: Record<TripStatus, BadgeTone> = { "In progress": "info", Completed: "success", Cancelled: "danger" };
 
 function yearsBetween(fromIso: string, toIso: string) {
   const [fy, fm, fd] = fromIso.split("-").map(Number);
@@ -28,10 +27,6 @@ function yearsBetween(fromIso: string, toIso: string) {
   return ty - fy - (tm < fm || (tm === fm && td < fd) ? 1 : 0);
 }
 
-// Quotations come from the database. Bookings still run on demo data whose codes overlap
-// real customers (CU-1001…), and the trip history / activity cards are generated from it.
-// Until Bookings reads the database, those cards show a note instead of demo records.
-const BOOKINGS_CONNECTED = false;
 
 export function CustomerProfile({ id }: { id: string }) {
   const { getCustomer, hydrated, addedIds, openEditForm, access } = useCustomers();
@@ -63,34 +58,10 @@ export function CustomerProfile({ id }: { id: string }) {
         <div className="space-y-6 lg:col-span-2">
           <NotesCard customer={customer} onEdit={onEdit} />
           {quotesVisible && <QuotesCard customer={customer} today={today} />}
-          {BOOKINGS_CONNECTED ? (
-            <>
-              <BookingsCard customer={customer} today={today} />
-              <TripsCard customer={customer} />
-              <ActivityCard customer={customer} />
-            </>
-          ) : (
-            <PendingHistoryCard />
-          )}
+          <BookingsCard customer={customer} today={today} />
         </div>
       </div>
     </div>
-  );
-}
-
-function PendingHistoryCard() {
-  return (
-    <Card>
-      <CardHeader title="Bookings & trips" />
-      <div className="flex items-start gap-3 p-5 sm:px-6">
-        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-navy-50 text-navy-400">
-          <Icon name="plane" size={18} />
-        </span>
-        <p className="text-sm text-navy-500">
-          Bookings and trip history will appear here once the Bookings module is connected to the database.
-        </p>
-      </div>
-    </Card>
   );
 }
 
@@ -439,136 +410,6 @@ function NotesCard({ customer: c, onEdit }: { customer: Customer; onEdit?: () =>
   );
 }
 
-/* ─────────────────────────── Trips & activity ─────────────────────────── */
-
-function TripsCard({ customer: c }: { customer: Customer }) {
-  const trips = useMemo(() => getCustomerTrips(c), [c]);
-  return (
-    <Card className="overflow-hidden">
-      <CardHeader
-        title="Trip history"
-        subtitle={
-          trips.length
-            ? c.trips > trips.length
-              ? `Latest ${trips.length} of ${c.trips} trips · demo data`
-              : `${c.trips} ${c.trips === 1 ? "trip" : "trips"} · demo data`
-            : undefined
-        }
-        action={
-          trips.length > 0 && (
-            <Link href="/bookings" className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-sky-brand-dark hover:text-navy-900">
-              All bookings <Icon name="arrowRight" size={14} />
-            </Link>
-          )
-        }
-      />
-      {trips.length ? (
-        <ul className="mt-4 divide-y divide-navy-50 border-t border-navy-50">
-          {trips.map((t) => (
-            <TripRow key={t.bookingId + t.departDate} trip={t} />
-          ))}
-        </ul>
-      ) : (
-        <div className="flex flex-col items-center px-6 py-12 text-center">
-          <div className="grid size-14 place-items-center rounded-2xl bg-navy-50 text-navy-400">
-            <Icon name="plane" size={24} />
-          </div>
-          <p className="mt-4 font-semibold text-navy-900">No trips yet</p>
-          <p className="mt-1 max-w-sm text-sm text-navy-400">Send {c.name.split(" ")[0]} a quotation to plan their first trip.</p>
-          <Link href="/quotations" className="mt-5 rounded-xl bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">
-            Create quotation
-          </Link>
-        </div>
-      )}
-      {c.trips > MAX_TRIPS_SHOWN && <div className="h-1" />}
-    </Card>
-  );
-}
-
-function TripRow({ trip: t }: { trip: Trip }) {
-  return (
-    <li className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 px-5 py-3.5 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto] sm:px-6">
-      <div className="flex min-w-0 items-center gap-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-xl",
-            t.status === "Cancelled" ? "bg-rose-50 text-rose-500" : "bg-sky-brand-light text-sky-brand-dark",
-          )}
-        >
-          <Icon name="plane" size={16} />
-        </span>
-        <div className="min-w-0">
-          <p className={cn("truncate font-medium text-navy-900", t.status === "Cancelled" && "text-navy-400 line-through")}>
-            {t.destination}
-          </p>
-          <p className="truncate text-xs text-navy-400">
-            <span className="font-mono">{t.bookingId}</span> · {t.kind}
-          </p>
-        </div>
-      </div>
-      <div className="col-start-1 row-start-2 pl-12 text-xs text-navy-500 sm:col-start-auto sm:row-start-auto sm:pl-0 sm:text-sm">
-        {formatDate(t.departDate)} – {formatDate(t.returnDate)}
-        <span className="block text-xs text-navy-400">
-          {t.nights} nights · {t.travellers} {t.travellers === 1 ? "traveller" : "travellers"}
-        </span>
-      </div>
-      <div className="row-span-2 flex flex-col items-end gap-1 sm:row-span-1">
-        <span className="font-semibold tabular-nums text-navy-900">{formatCurrency(t.amount)}</span>
-        <Badge tone={tripTone[t.status]}>{t.status}</Badge>
-      </div>
-    </li>
-  );
-}
-
-function ActivityCard({ customer: c }: { customer: Customer }) {
-  const trips = useMemo(() => getCustomerTrips(c), [c]);
-  const events: { date: string; icon: IconName; text: ReactNode; cls: string }[] = [
-    ...trips.slice(0, 4).map((t) => ({
-      date: t.departDate,
-      icon: (t.status === "Cancelled" ? "alert" : "plane") as IconName,
-      cls: t.status === "Cancelled" ? "bg-rose-50 text-rose-600" : "bg-sky-brand-light text-sky-brand-dark",
-      text: (
-        <>
-          {t.status === "In progress" ? "Departed for " : t.status === "Cancelled" ? "Cancelled trip to " : "Travelled to "}
-          <span className="font-medium text-navy-900">{t.destination}</span>
-          <span className="text-navy-400"> · {formatCurrency(t.amount)}</span>
-        </>
-      ),
-    })),
-    {
-      date: c.joined,
-      icon: "users",
-      cls: "bg-gold-50 text-gold-700",
-      text: (
-        <>
-          Became a FLYVERA customer, assigned to <span className="font-medium text-navy-900">{c.agent}</span>
-        </>
-      ),
-    },
-  ];
-
-  return (
-    <Card>
-      <CardHeader title="Activity" subtitle="Key moments with this customer" />
-      <ol className="relative space-y-5 p-5 before:absolute before:bottom-7 before:left-[37px] before:top-7 before:w-px before:bg-navy-100 sm:px-6 sm:before:left-[41px]">
-        {events.map((e, i) => (
-          <li key={i} className="relative flex gap-3">
-            <span className={cn("relative grid size-9 shrink-0 place-items-center rounded-full ring-4 ring-white", e.cls)}>
-              <Icon name={e.icon} size={16} />
-            </span>
-            <div className="pt-0.5 text-sm text-navy-600">
-              <p>{e.text}</p>
-              <p className="mt-0.5 text-xs text-navy-400">{formatDate(e.date)}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </Card>
-  );
-}
-
-/* ─────────────────────────── States ─────────────────────────── */
-
 function NotFound({ id }: { id: string }) {
   return (
     <Card className="flex flex-col items-center px-6 py-20 text-center">
@@ -667,7 +508,7 @@ function BookingsCard({ customer: c, today }: { customer: Customer; today: strin
                   </span>
                 </span>
                 <span className="flex shrink-0 flex-col items-end gap-1">
-                  <span className="font-semibold tabular-nums text-navy-900">{formatMoney(bookingMoney(b).total)}</span>
+                  <span className="font-semibold tabular-nums text-navy-900">{bookingTotalLabel(b)}</span>
                   <span className="flex gap-1">
                     <BookingStatusBadge status={b.status} />
                     <PaymentBadge booking={b} today={today} />

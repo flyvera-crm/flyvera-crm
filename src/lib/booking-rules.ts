@@ -1,6 +1,6 @@
 // Pure booking logic (no React / browser APIs): money, payment state, trip timing,
 // what the next step is and what blocks it. Can later run on a server unchanged.
-import type { Booking, BookingPayment, BookingStatus, Customer, PaymentMethod, Quotation } from "@/types/crm";
+import type { Booking, BookingPayment, BookingStatus, PaymentMethod } from "@/types/crm";
 import { quoteTotals } from "@/lib/quote-math";
 import { addDays } from "@/lib/customer-history";
 
@@ -160,40 +160,42 @@ export function validatePayment(v: PaymentFormValues, b: Booking, today: string)
 
 /* ── Creating a booking ── */
 
-export function nextBookingId(existing: { id: string }[]) {
-  const max = existing.reduce((m, b) => Math.max(m, Number(b.id.replace(/\D/g, "")) || 0), 10_000);
-  return `FV-${max + 1}`;
+/**
+ * Dates for a new booking made from a quotation: deposit due DEPOSIT_DAYS after booking,
+ * balance due BALANCE_DAYS_BEFORE_DEPARTURE before departure (never before the deposit).
+ * A quotation without dates is booked 60 days out, to be updated with the customer.
+ */
+export function bookingDates(q: { departDate?: string; returnDate?: string }, today: string) {
+  const depositDue = addDays(today, DEPOSIT_DAYS);
+  const departOn = q.departDate && q.departDate >= today ? q.departDate : addDays(today, 60);
+  const returnOn = q.returnDate && q.returnDate >= departOn ? q.returnDate : undefined;
+  const balanceByDeparture = addDays(departOn, -BALANCE_DAYS_BEFORE_DEPARTURE);
+  return { departOn, returnOn, depositDue, balanceDue: balanceByDeparture > depositDue ? balanceByDeparture : depositDue };
 }
 
-/** Turns an accepted quotation into a Pending booking for the given customer. */
-export function bookingFromQuote(q: Quotation, customer: Customer, id: string, today: string): Booking {
-  const depositDue = addDays(today, DEPOSIT_DAYS);
-  const depart = q.departDate ?? addDays(today, 60);
-  const balanceByDeparture = addDays(depart, -BALANCE_DAYS_BEFORE_DEPARTURE);
-  return {
-    id,
-    customerId: customer.id,
-    customerName: customer.name,
-    customerPhone: customer.phone,
-    customerEmail: customer.email,
-    quoteId: q.id,
-    title: q.title,
-    destination: q.destination,
-    departDate: depart,
-    returnDate: q.returnDate,
-    adults: q.adults,
-    children: q.children,
-    services: q.items.map((i) => ({ ...i })),
-    discount: q.discount,
-    taxRate: q.taxRate,
-    status: "Pending",
-    payments: [],
-    depositDue,
-    // Late bookings: balance can't be due before the deposit.
-    balanceDue: balanceByDeparture > depositDue ? balanceByDeparture : depositDue,
-    agent: q.agent,
-    created: today,
-    updated: today,
-    history: [{ date: today, text: `Booking created from ${q.id} — awaiting deposit` }],
-  };
+/* ── Correcting a payment (Finance / admin) ── */
+
+export type PaymentCorrectionValues = PaymentFormValues & { reference: string; reason: string };
+
+export function validatePaymentCorrection(v: PaymentCorrectionValues, original: BookingPayment, b: Booking, today: string) {
+  const errors: Partial<Record<keyof PaymentCorrectionValues, string>> = {};
+  const amount = Number(v.amount.replace(/[,\s$]/g, ""));
+  if (!v.amount.trim()) errors.amount = "Enter the amount actually received.";
+  else if (!Number.isFinite(amount) || amount <= 0) errors.amount = "Enter an amount above 0.";
+  else if (Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6) errors.amount = "Use at most 2 decimal places.";
+  else {
+    // The booking total can't be exceeded (the database checks this too).
+    const { total, paid } = bookingMoney(b);
+    if (paid - original.amount + amount > total + 0.005)
+      errors.amount = `That would be more than the booking total (${total.toFixed(2)}).`;
+  }
+  if (!v.date) errors.date = "Enter the date the money arrived.";
+  else if (v.date > today) errors.date = "The payment date can't be in the future.";
+  else if (v.date < b.created) errors.date = "That's before the booking was created.";
+  if (v.reference.length > 60) errors.reference = "Keep the reference under 60 characters.";
+  if (v.note.length > 120) errors.note = "Keep the note under 120 characters.";
+  const reason = v.reason.trim();
+  if (reason.length < 5) errors.reason = "Explain why the payment is being corrected (at least 5 characters).";
+  else if (reason.length > 200) errors.reason = "Keep the reason under 200 characters.";
+  return errors;
 }

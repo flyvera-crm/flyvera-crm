@@ -13,7 +13,9 @@ export type LedgerEntry = { booking: Booking; payment: BookingPayment; receiptNo
 
 /** "FV-10481" + "p2" → "RC-10481-2" */
 export function receiptNumber(bookingId: string, paymentId: string) {
-  return `RC-${bookingId.replace(/\D/g, "")}-${paymentId.replace(/\D/g, "")}`;
+  // Same format the database uses: RC-<booking>-<n> for payments, RF-<booking>-<n> for refunds ("r1", "r2"…).
+  const prefix = paymentId.startsWith("r") ? "RF" : "RC";
+  return `${prefix}-${bookingId.replace(/\D/g, "")}-${paymentId.replace(/\D/g, "")}`;
 }
 
 /** Every payment and refund across all bookings, newest first. Refunds count as negative. */

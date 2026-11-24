@@ -57,9 +57,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 14 migrations in order on an empty database", () => {
+  it("applies all 15 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 14);
+    assert.equal(files.length, 15);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -704,5 +704,112 @@ describe("13 · Integrity hardening (migration 14)", () => {
   it("filters quotation_totals by role like the other money views", async () => {
     await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from quotation_totals"), 0));
     await asUser(db, USERS.aisha.id, async (q) => assert.equal(await count(q, "select 1 from quotation_totals"), quotations.length));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("14 · Booking creation & payment corrections (migration 15)", () => {
+  const BOOK = "select create_booking_from_quotation($1, $2, current_date + 60, current_date + 67, current_date + 7, current_date + 30) as id";
+
+  /** An accepted quotation for Sara's customer CU-1001, created inside the current (rolled-back) transaction. */
+  async function acceptedQuote(q, withItems = true) {
+    const [quote] = await q(
+      `insert into quotations (organization_id, customer_id, recipient, title, destination, valid_until, status, prepared_by, sent_at, responded_at)
+       values ($1, $2, '{"name":"Amelia Hart"}', 'Lisbon weekend', 'Lisbon', current_date + 14, 'Accepted', $3, now(), now()) returning id`,
+      [ORG, ids["CU-1001"], USERS.sara.id]);
+    if (withItems) {
+      await q(
+        `insert into quotation_items (organization_id, quotation_id, position, item_type, description, quantity, unit_price, cost)
+         values ($1, $2, 0, 'Flight', 'Return flights', 2, 400, 600), ($1, $2, 1, 'Hotel', '3 nights', 1, 500, 380)`,
+        [ORG, quote.id]);
+    }
+    return quote.id;
+  }
+
+  it("creates a booking with its services and first timeline entry in one step", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const quoteId = await acceptedQuote(q);
+      const [{ id }] = await q(BOOK, [quoteId, ids["CU-1001"]]);
+      const [b] = await q("select code, status, quotation_id, agent_id from bookings where id = $1", [id]);
+      assert.match(b.code, /^FV-\d+$/);
+      assert.equal(b.status, "Pending");
+      assert.equal(b.agent_id, USERS.sara.id);
+      assert.equal(await count(q, "select 1 from booking_services where booking_id = $1", [id]), 2);
+      const [f] = await q("select total, balance from booking_financials where booking_id = $1", [id]);
+      assert.equal(Number(f.total), 1300);
+      assert.equal(Number(f.balance), 1300);
+      const [e] = await q("select body from booking_events where booking_id = $1", [id]);
+      assert.match(e.body, /^Booking created from QT-\d+/);
+      await q.fails(BOOK, [quoteId, ids["CU-1001"]], /bookings_quotation_uidx|duplicate key/); // one booking per quotation
+    });
+  });
+
+  it("leaves nothing behind when a booking can't be completed", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const empty = await acceptedQuote(q, false);
+      await q.fails(BOOK, [empty, ids["CU-1001"]], /no items to book/);
+      assert.equal(await count(q, "select 1 from bookings where quotation_id = $1", [empty]), 0);
+
+      const [draft] = await q(
+        `insert into quotations (organization_id, customer_id, recipient, title, destination, valid_until, prepared_by)
+         values ($1, $2, '{"name":"Amelia Hart"}', 'Draft trip', 'Rome', current_date + 14, $3) returning id`,
+        [ORG, ids["CU-1001"], USERS.sara.id]);
+      await q.fails(BOOK, [draft.id, ids["CU-1001"]], /Only accepted quotations/);
+      await q.fails(BOOK, [await acceptedQuote(q), ids["CU-1005"]], /different customer/);
+    });
+  });
+
+  it("follows the booking permissions (finance can't create bookings)", async () => {
+    await asOwner(db, async (q) => {
+      const quoteId = await acceptedQuote(q);
+      await q("set local role authenticated");
+      await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: USERS.fiona.id })]);
+      await q.fails(BOOK, [quoteId, ids["CU-1001"]], /row-level security/);
+    });
+  });
+
+  it("lets finance correct a payment only with a reason, and logs before/after + reason", async () => {
+    await asOwner(db, async (q) => {
+      const [p] = await q(
+        "select id, amount, received_on, method, reference, note, receipt_number, booking_id from payments where organization_id = $1 order by received_on desc limit 1",
+        [ORG]);
+      const newAmount = Number(p.amount) - 1;
+      await q("set local role authenticated");
+      await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: USERS.fiona.id })]);
+      // Keeps the payment's reference and note, so only the listed fields change.
+      const correct = "select correct_payment($1, $2, $3, $4, $6, $7, $5)";
+      const keep = [p.reference, p.note];
+
+      await q.fails(correct, [p.id, newAmount, p.received_on, p.method, "", ...keep], /reason/);
+      await q.fails(correct, [p.id, p.amount, p.received_on, p.method, "No real change", ...keep], /Nothing was changed/);
+      await q.fails(correct, [p.id, 99_999_999, p.received_on, p.method, "Typo in amount", ...keep], /exceeds the booking balance/);
+      await q.fails("update payments set amount = 1 where id = $1", [p.id], /permission denied/);
+
+      await q(correct, [p.id, newAmount, p.received_on, p.method, "Bank fee deducted", ...keep]);
+      const [after] = await q("select amount, receipt_number from payments where id = $1", [p.id]);
+      assert.equal(Number(after.amount), newAmount);
+      assert.equal(after.receipt_number, p.receipt_number); // receipt number can't change
+      const [event] = await q("select body from booking_events where booking_id = $1 order by created_at desc limit 1", [p.booking_id]);
+      assert.ok(event.body.startsWith(`Payment ${p.receipt_number} corrected (amount ${Number(p.amount).toFixed(2)} → ${newAmount.toFixed(2)})`), event.body);
+      assert.ok(event.body.endsWith("— reason: Bank fee deducted"), event.body);
+
+      await q("reset role");
+      const [log] = await q(
+        "select actor_id, changed_fields, old_data->>'amount' old_amount, new_data->>'amount' new_amount, context->>'reason' reason from audit_logs where table_name = 'payments' and record_id = $1 order by id desc limit 1",
+        [p.id]);
+      assert.equal(log.actor_id, USERS.fiona.id);
+      assert.deepEqual(log.changed_fields, ["amount"]);
+      assert.equal(Number(log.old_amount), Number(p.amount));
+      assert.equal(Number(log.new_amount), newAmount);
+      assert.equal(log.reason, "Bank fee deducted");
+    });
+  });
+
+  it("refuses payment corrections from anyone outside Finance and admins", async () => {
+    const [p] = (await db.query("select id, amount, received_on, method from payments where organization_id = $1 limit 1", [ORG])).rows;
+    for (const user of [USERS.sara, USERS.leo, USERS.sam, USERS.nora]) {
+      await asUser(db, user.id, (q) =>
+        q.fails("select correct_payment($1, $2, $3, $4, null, null, 'Trying to edit')", [p.id, Number(p.amount) - 1, p.received_on, p.method], /Only Finance or an admin/));
+    }
   });
 });

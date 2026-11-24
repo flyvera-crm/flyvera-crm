@@ -13,12 +13,10 @@ import { QuoteDocument } from "./QuoteDocument";
 import { QuoteMissing } from "./QuoteEditor";
 import { QuoteStatusBadge, shareText, useQuoteActions } from "./quote-actions";
 import { useBookingActions } from "@/components/bookings/use-booking-actions";
-import { useBookings } from "@/lib/booking-store";
+import { useBookingData, useBookings } from "@/lib/booking-store";
 
-// Bookings still run on demo data whose quotation codes (QT-3001…) overlap real ones.
-// Until that module reads the database, accepted quotations show a note instead of
-// "Create booking" / "View booking".
-const BOOKINGS_CONNECTED = false;
+// Bookings come from the database (shared list), so accepted quotations link to their real booking.
+const BOOKINGS_CONNECTED = true;
 
 export function QuoteView({ id }: { id: string }) {
   const { quotes, today } = useQuotations();
@@ -26,6 +24,7 @@ export function QuoteView({ id }: { id: string }) {
   const actions = useQuoteActions();
   const { createFromQuote } = useBookingActions();
   const { bookings } = useBookings();
+  const canBook = useBookingData().access.canCreate;
   const [busy, startBusy] = useTransition();
   const quote = quotes.find((q) => q.id === id);
   const booking = quote && BOOKINGS_CONNECTED ? bookings.find((b) => b.quoteId === quote.id) : undefined;
@@ -94,7 +93,7 @@ export function QuoteView({ id }: { id: string }) {
                   View booking {booking.id}
                 </ToolbarLink>
               ) : (
-                canEdit && (
+                canBook && (
                   <ToolbarButton primary icon="calendar" onClick={() => createFromQuote(quote)}>
                     Create booking
                   </ToolbarButton>
