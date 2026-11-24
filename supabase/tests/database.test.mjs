@@ -57,9 +57,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 13 migrations in order on an empty database", () => {
+  it("applies all 14 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 13);
+    assert.equal(files.length, 14);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -611,5 +611,98 @@ describe("12 · Private file storage", () => {
       await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: USERS.leo.id })]);
       assert.equal(await count(q, "select 1 from storage.objects where name like '%secret.pdf'"), 1);
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("13 · Integrity hardening (migration 14)", () => {
+  it("never lets anyone change who created a task or flight search", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [task] = await q("insert into tasks (organization_id, title) values ($1, 'Call back') returning id, created_by", [ORG]);
+      assert.equal(task.created_by, USERS.sara.id);
+      assert.equal(N(await q("update tasks set title = 'Call back today' where id = $1 returning id", [task.id])), 1);
+      await q.fails("update tasks set created_by = $2 where id = $1", [task.id, USERS.maya.id], /created_by cannot be changed/);
+      const [search] = await q("insert into flight_searches (organization_id, origin, destination, depart_on) values ($1, 'DXB', 'LHR', current_date + 30) returning id", [ORG]);
+      await q.fails("update flight_searches set created_by = $2 where id = $1", [search.id, USERS.maya.id], /created_by cannot be changed/);
+    });
+  });
+
+  it("records the real reviewer of an AI action, whatever the client sends", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [proposed] = await q(
+        "insert into ai_actions (organization_id, action_kind, reviewed_by, reviewed_at) values ($1, 'Draft reply', $2, now()) returning id, reviewed_by, reviewed_at",
+        [ORG, USERS.aisha.id]);
+      assert.equal(proposed.reviewed_by, null);
+      assert.equal(proposed.reviewed_at, null);
+
+      const [approved] = await q("update ai_actions set status = 'Approved', reviewed_by = $2 where id = $1 returning reviewed_by, reviewed_at", [proposed.id, USERS.aisha.id]);
+      assert.equal(approved.reviewed_by, USERS.sara.id);
+      assert.ok(approved.reviewed_at);
+
+      const [edited] = await q("update ai_actions set reviewed_by = $2 where id = $1 returning reviewed_by", [proposed.id, USERS.aisha.id]);
+      assert.equal(edited.reviewed_by, USERS.sara.id);
+
+      const [decided] = await q("insert into ai_actions (organization_id, action_kind, status, reviewed_by) values ($1, 'Summary', 'Rejected', $2) returning reviewed_by", [ORG, USERS.aisha.id]);
+      assert.equal(decided.reviewed_by, USERS.sara.id);
+
+      await q.fails("update ai_actions set requested_by = $2 where id = $1", [proposed.id, USERS.maya.id], /requested_by cannot be changed/);
+    });
+  });
+
+  it("records the real verifier of a travel document", async () => {
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const [doc] = await q(
+        "update customer_travel_documents set verified_by = $2, verified_at = '2000-01-01' where id = $1 returning verified_by, verified_at",
+        [ids.docAmelia, USERS.sara.id]);
+      assert.equal(doc.verified_by, USERS.aisha.id);
+      assert.ok(new Date(doc.verified_at).getFullYear() > 2000);
+      const [backdated] = await q("update customer_travel_documents set verified_at = '2000-01-01' where id = $1 returning verified_at", [ids.docAmelia]);
+      assert.ok(new Date(backdated.verified_at).getFullYear() > 2000);
+      const [cleared] = await q("update customer_travel_documents set verified_by = null where id = $1 returning verified_by, verified_at", [ids.docAmelia]);
+      assert.equal(cleared.verified_by, null);
+      assert.equal(cleared.verified_at, null);
+    });
+  });
+
+  it("hides archived customers, leads and quotations from everyone but admins", async () => {
+    const cust = ids["CU-1001"]; // assigned to Sara
+    await asUser(db, USERS.sara.id, async (q) => {
+      await q.fails("update customers set deleted_at = now() where id = $1", [cust], /row-level security/);
+      await q.fails("select archive_customer($1)", [ids["CU-1005"]], /cannot archive this customer/); // Daniel's
+      await q("select archive_customer($1)", [cust]);
+      assert.equal(await count(q, "select 1 from customers where id = $1", [cust]), 0);
+      assert.equal(N(await q("update customers set notes = 'x' where id = $1 returning id", [cust])), 0);
+      assert.equal(N(await q("update customers set notes = 'x' where code = 'CU-1001' returning id")), 0);
+      assert.equal(await count(q, "select 1 from audit_logs"), 0); // still no audit access…
+    });
+    await asOwner(db, async (q) => {
+      await q("set local role authenticated");
+      await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: USERS.sara.id })]);
+      await q("select archive_customer($1)", [cust]);
+      await q("reset role");
+      const [log] = await q("select actor_id, changed_fields from audit_logs where table_name = 'customers' and record_id = $1 order by id desc limit 1", [cust]);
+      assert.equal(log.actor_id, USERS.sara.id); // …but the archive is logged under her name
+      assert.deepEqual(log.changed_fields, ["deleted_at"]);
+    });
+    await asUser(db, USERS.aisha.id, async (q) => {
+      await q("update customers set deleted_at = now() where id = $1", [cust]);
+      assert.equal(await count(q, "select 1 from customers where id = $1", [cust]), 1);
+      assert.equal(N(await q("update customers set deleted_at = null where id = $1 returning id", [cust])), 1);
+    });
+    await asUser(db, USERS.maya.id, async (q) => {
+      const leadsBefore = await count(q, "select 1 from leads");
+      await q("select archive_lead(id) from leads where code = 'LD-2050'");
+      assert.equal(await count(q, "select 1 from leads"), leadsBefore - 1);
+      const quotesBefore = await count(q, "select 1 from quotations");
+      await q("select archive_quotation(id) from (select id from quotations limit 1) x");
+      assert.equal(await count(q, "select 1 from quotations"), quotesBefore - 1);
+    });
+    await asUser(db, USERS.sam.id, (q) =>
+      q.fails("select archive_lead(id) from leads where code = 'LD-2050'", [], /cannot archive this lead/));
+  });
+
+  it("filters quotation_totals by role like the other money views", async () => {
+    await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from quotation_totals"), 0));
+    await asUser(db, USERS.aisha.id, async (q) => assert.equal(await count(q, "select 1 from quotation_totals"), quotations.length));
   });
 });
