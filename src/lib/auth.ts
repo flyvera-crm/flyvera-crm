@@ -5,22 +5,10 @@ import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
-export type AppRole =
-  | "admin"
-  | "sales_manager"
-  | "sales_agent"
-  | "ticketing_agent"
-  | "finance_manager"
-  | "support_agent";
+import { ROLE_LABELS, type AppRole } from "@/config/roles";
 
-export const ROLE_LABELS: Record<AppRole, string> = {
-  admin: "Agency Admin",
-  sales_manager: "Sales Manager",
-  sales_agent: "Sales Agent",
-  ticketing_agent: "Ticketing Agent",
-  finance_manager: "Finance Manager",
-  support_agent: "Support Agent",
-};
+// Role names live in src/config/roles.ts so browser components can use them too.
+export { ROLE_LABELS, type AppRole };
 
 export type CurrentUser = {
   id: string;

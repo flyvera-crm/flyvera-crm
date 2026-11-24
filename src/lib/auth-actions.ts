@@ -44,3 +44,43 @@ function safeNextPath(value: FormDataEntryValue | null) {
   const external = path.startsWith("//") || path.startsWith("/\\");
   return path.startsWith("/") && !external && !path.startsWith("/login") ? path : "/dashboard";
 }
+
+/* ── Passwords (invitations and "forgot password") ── */
+
+export type PasswordState = { error?: string; sent?: boolean; email?: string };
+
+const PASSWORD_MIN = 10; // also stated on the set-password page ("use server" files export only async functions)
+
+/** Signed-in person (arrived from an invitation or reset email, or changing it) chooses a new password. */
+export async function setPassword(_prev: PasswordState, formData: FormData): Promise<PasswordState> {
+  const password = String(formData.get("password") ?? "");
+  const confirm = String(formData.get("confirm") ?? "");
+  if (password.length < PASSWORD_MIN) return { error: `Use at least ${PASSWORD_MIN} characters.` };
+  if (password.length > 72) return { error: "Use at most 72 characters." };
+  if (password !== confirm) return { error: "The two passwords don't match." };
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) {
+    if (error.code === "same_password") return { error: "Choose a password different from your current one." };
+    if (error.code === "weak_password") return { error: "That password is too easy to guess. Try a longer one." };
+    if (error.status === 401 || error.code === "session_not_found") {
+      return { error: "Your link has expired. Request a new one from the sign-in page." };
+    }
+    return { error: "Your password couldn't be saved. Try again in a moment." };
+  }
+  redirect("/dashboard");
+}
+
+/**
+ * Sends a password-reset email. The answer is the same whether or not the address has an
+ * account, so this can't be used to find out who works at the agency.
+ */
+export async function requestPasswordReset(_prev: PasswordState, formData: FormData): Promise<PasswordState> {
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 254) return { error: "Enter your email address.", email };
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email);
+  if (error && error.status === 429) return { error: "Too many requests. Wait a few minutes and try again.", email };
+  return { sent: true, email };
+}

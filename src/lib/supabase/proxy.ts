@@ -8,7 +8,10 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseEnv } from "./env";
 
-const PUBLIC_PATHS = ["/login"];
+/** Only for signed-out visitors (signed-in users are sent to the dashboard). */
+const PUBLIC_PATHS = ["/login", "/forgot-password"];
+/** Open to everyone: email links (invitations, password resets) sign the person in here. */
+const OPEN_PATHS = ["/auth/confirm"];
 
 export async function updateSession(request: NextRequest) {
   const { url, key } = supabaseEnv();
@@ -34,6 +37,7 @@ export async function updateSession(request: NextRequest) {
   const signedIn = Boolean(data?.claims?.sub);
 
   const path = request.nextUrl.pathname;
+  if (OPEN_PATHS.some((p) => path === p || path.startsWith(p + "/"))) return response;
   const isPublic = PUBLIC_PATHS.some((p) => path === p || path.startsWith(p + "/"));
 
   if (!signedIn && !isPublic) {

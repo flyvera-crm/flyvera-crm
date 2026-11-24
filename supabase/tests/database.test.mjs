@@ -57,9 +57,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 18 migrations in order on an empty database", () => {
+  it("applies all 19 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 18);
+    assert.equal(files.length, 19);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -234,17 +234,20 @@ describe("3 · Relationships & data integrity", () => {
   });
 
   it("never leaves the agency without an active admin", async () => {
-    await asUser(db, USERS.aisha.id, async (q) => {
-      await q.fails("update organization_members set role = 'sales_manager' where user_id = $1", [USERS.aisha.id], /at least one active admin/);
-    });
+    // Since migration 19 roles change through change_member_role() (never your own); the trigger still guards every path.
+    await asUser(db, USERS.aisha.id, (q) =>
+      q.fails("select change_member_role($1, $2, 'sales_manager', 'Stepping back from admin')", [ORG, USERS.aisha.id], /own role/));
+    await asOwner(db, (q) =>
+      q.fails("update organization_members set role = 'sales_manager' where user_id = $1", [USERS.aisha.id], /at least one active admin/));
   });
 
   it("only lets invited people in — there is no public sign-up", async () => {
     await asOwner(db, async (q) => {
-      await q(`insert into auth.users (id, email, raw_user_meta_data) values (gen_random_uuid(), 'new.agent@flyvera.test', '{"full_name":"New Agent"}')`);
+      // Access is granted once the login is confirmed (an invited person accepting — migration 19).
+      await q(`insert into auth.users (id, email, email_confirmed_at, raw_user_meta_data) values (gen_random_uuid(), 'new.agent@flyvera.test', now(), '{"full_name":"New Agent"}')`);
       const invited = await q(`select m.role from organization_members m join auth.users u on u.id = m.user_id where u.email = 'new.agent@flyvera.test'`);
       assert.deepEqual(invited, [{ role: "sales_agent" }]);
-      await q(`insert into auth.users (id, email) values (gen_random_uuid(), 'stranger@example.test')`);
+      await q(`insert into auth.users (id, email, email_confirmed_at) values (gen_random_uuid(), 'stranger@example.test', now())`);
       const stranger = await q(`select p.id, (select count(*)::int from organization_members m where m.user_id = p.id) as memberships
                                 from profiles p join auth.users u on u.id = p.id where u.email = 'stranger@example.test'`);
       assert.equal(stranger.length, 1, "profile is created");
@@ -1140,5 +1143,162 @@ describe("17 · Refund requests (migration 18)", () => {
       await asUser(db, user.id, (q) =>
         q.fails("select record_paid_refund($1, 5, 'Card', current_date, 'Other', 'Trying to pay out', null)", [ids["FV-10477"]], /Only Finance or an admin/));
     }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("18 · Team & access (migration 19)", () => {
+  const TEAM_HORIZON = "c0000000-0000-4000-8000-000000000002";
+  const TEAM_ATLAS = "c0000000-0000-4000-8000-000000000001";
+  const INVITE = "select invite_member($1, $2, $3, $4, $5) as r";
+  const switchTo = async (q, user) => {
+    await q("set local role authenticated");
+    await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: user.id })]);
+  };
+  const login = (q, email, confirmed) =>
+    q(`insert into auth.users (id, email, email_confirmed_at) values (gen_random_uuid(), $1, ${confirmed ? "now()" : "null"}) returning id`, [email]).then((r) => r[0].id);
+  const membership = (q, userId) =>
+    q("select m.role, (select array_agg(t.team_id) from team_members t where t.user_id = m.user_id) as teams from organization_members m where m.user_id = $1", [userId]);
+
+  it("lets only admins invite, with valid details, and only once", async () => {
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const [{ r }] = await q(INVITE, [ORG, "Lina.Park@Flyvera.test ", "Lina Park", "sales_agent", TEAM_HORIZON]);
+      assert.equal(r.granted, false);
+      const [inv] = await q("select email, full_name, role, team_id, invited_by from organization_invitations where id = $1", [r.id]);
+      assert.deepEqual(inv, { email: "lina.park@flyvera.test", full_name: "Lina Park", role: "sales_agent", team_id: TEAM_HORIZON, invited_by: USERS.aisha.id });
+      await q.fails(INVITE, [ORG, "lina.park@flyvera.test", "Lina Park", "sales_agent", null], /already been invited/);
+      await q.fails(INVITE, [ORG, USERS.sara.email, "Sara Kim", "sales_agent", null], /already in the team\./);
+      await q.fails(INVITE, [ORG, USERS.tom.email, "Tom Former", "sales_agent", null], /disabled — re-enable/);
+      await q.fails(INVITE, [ORG, "not-an-email", "Someone", "sales_agent", null], /valid email/);
+      await q.fails(INVITE, [ORG, "x@flyvera.test", "X", "sales_agent", null], /full name/);
+      await q.fails("insert into organization_invitations (organization_id, email, role) values ($1, 'direct@flyvera.test', 'admin')", [ORG], /permission denied/);
+    });
+    await asUser(db, USERS.maya.id, (q) => q.fails(INVITE, [ORG, "a@flyvera.test", "Al Bee", "sales_agent", null], /Only an admin/));
+    await asUser(db, USERS.nora.id, (q) => q.fails(INVITE, [ORG, "b@flyvera.test", "Bea Cee", "admin", null], /Only an admin/));
+  });
+
+  it("grants access only when the invitation is accepted, with the invited role and team", async () => {
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.aisha);
+      await q(INVITE, [ORG, "lina.park@flyvera.test", "Lina Park", "ticketing_agent", TEAM_HORIZON]);
+      await q("reset role");
+      // Supabase creates the login when it sends the email — not yet confirmed: no access.
+      const lina = await login(q, "lina.park@flyvera.test", false);
+      assert.deepEqual(await membership(q, lina), []);
+      assert.equal((await q("select full_name from profiles where id = $1", [lina]))[0].full_name, "Lina Park");
+      // Accepting the invitation confirms the email → access.
+      await q("update auth.users set email_confirmed_at = now() where id = $1", [lina]);
+      assert.deepEqual(await membership(q, lina), [{ role: "ticketing_agent", teams: [TEAM_HORIZON] }]);
+      assert.equal(await count(q, "select 1 from organization_invitations where email = 'lina.park@flyvera.test' and accepted_at is not null"), 1);
+    });
+  });
+
+  it("never grants a revoked or expired invitation; a revoked one can be replaced", async () => {
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.aisha);
+      const [{ r }] = await q(INVITE, [ORG, "omar@flyvera.test", "Omar Haddad", "sales_agent", null]);
+      await q("reset role");
+      const omar = await login(q, "omar@flyvera.test", false);
+      await switchTo(q, USERS.aisha);
+      // Revoking returns the unconfirmed login so the app can remove it (the email link stops working).
+      assert.equal((await q("select revoke_invitation($1) as login", [r.id]))[0].login, omar);
+      await q.fails("select revoke_invitation($1)", [r.id], /already revoked/);
+      await q("reset role");
+      await q("update auth.users set email_confirmed_at = now() where id = $1", [omar]);
+      assert.deepEqual(await membership(q, omar), [], "revoked: no access");
+      // A new invitation for someone who already has a confirmed login grants access at once.
+      await switchTo(q, USERS.aisha);
+      const [{ r: again }] = await q(INVITE, [ORG, "omar@flyvera.test", "Omar Haddad", "sales_agent", null]);
+      assert.equal(again.granted, true);
+      await q("reset role");
+      assert.deepEqual(await membership(q, omar), [{ role: "sales_agent", teams: null }]);
+      // Expired invitations grant nothing.
+      await q("insert into organization_invitations (organization_id, email, role, expires_at) values ($1, 'late@flyvera.test', 'sales_agent', now() - interval '1 day')", [ORG]);
+      const late = await login(q, "late@flyvera.test", true);
+      assert.deepEqual(await membership(q, late), []);
+    });
+  });
+
+  it("changes roles only with a reason, never your own, and logs the reason", async () => {
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.aisha);
+      const CHANGE = "select change_member_role($1, $2, $3, $4)";
+      await q.fails(CHANGE, [ORG, USERS.daniel.id, "sales_manager", ""], /reason/);
+      await q.fails(CHANGE, [ORG, USERS.daniel.id, "sales_agent", "No change at all"], /different role/);
+      await q.fails(CHANGE, [ORG, USERS.aisha.id, "sales_manager", "Stepping back"], /own role/);
+      await q(CHANGE, [ORG, USERS.daniel.id, "sales_manager", "Promoted to lead Team Horizon"]);
+      assert.equal((await membership(q, USERS.daniel.id))[0].role, "sales_manager");
+      await q.fails("update organization_members set role = 'admin' where user_id = $1", [USERS.daniel.id], /permission denied/);
+      await q.fails("delete from organization_members where user_id = $1", [USERS.daniel.id], /permission denied/);
+      await q("reset role");
+      const [log] = await q(
+        "select old_data->>'role' old_role, new_data->>'role' new_role, context->>'reason' reason, actor_id from audit_logs where table_name = 'organization_members' and new_data->>'user_id' = $1 and action = 'UPDATE'",
+        [USERS.daniel.id]);
+      assert.deepEqual(log, { old_role: "sales_agent", new_role: "sales_manager", reason: "Promoted to lead Team Horizon", actor_id: USERS.aisha.id });
+    });
+    await asUser(db, USERS.maya.id, (q) =>
+      q.fails("select change_member_role($1, $2, 'admin', 'Make me admin please')", [ORG, USERS.sara.id], /Only an admin/));
+  });
+
+  it("disables someone only with a reason, handing their open work to an active colleague", async () => {
+    await asOwner(db, async (q) => {
+      const closedBefore = await count(q, "select 1 from bookings where agent_id = $1 and status in ('Completed', 'Cancelled')", [USERS.daniel.id]);
+      const customersOfSara = await count(q, "select 1 from customers where assigned_to = $1", [USERS.sara.id]);
+      await switchTo(q, USERS.aisha);
+      const SET = "select set_member_status($1, $2, $3, $4, $5) as moved";
+      const [{ open_work: work }] = await q("select member_open_work($1, $2) as open_work", [ORG, USERS.daniel.id]);
+      assert.ok(work.customers > 0, "Daniel has customers to hand over");
+      await q.fails(SET, [ORG, USERS.daniel.id, "disabled", "", USERS.sara.id], /reason/);
+      await q.fails(SET, [ORG, USERS.daniel.id, "disabled", "Left the company", null], /choose a colleague/);
+      for (const to of [USERS.sam.id, USERS.tom.id, USERS.daniel.id, USERS.nora.id]) {
+        await q.fails(SET, [ORG, USERS.daniel.id, "disabled", "Left the company", to], /active admin or sales colleague/);
+      }
+      await q.fails(SET, [ORG, USERS.aisha.id, "disabled", "Taking a break", USERS.sara.id], /yourself/);
+      const [{ moved }] = await q(SET, [ORG, USERS.daniel.id, "disabled", "Left the company", USERS.sara.id]);
+      assert.deepEqual(moved, work);
+      assert.deepEqual(Object.values((await q("select member_open_work($1, $2) as w", [ORG, USERS.daniel.id]))[0].w), [0, 0, 0, 0, 0, 0]);
+      await q("reset role");
+      assert.equal(await count(q, "select 1 from customers where assigned_to = $1", [USERS.sara.id]), customersOfSara + work.customers);
+      assert.equal(await count(q, "select 1 from bookings where agent_id = $1 and status in ('Completed', 'Cancelled')", [USERS.daniel.id]), closedBefore,
+        "finished bookings keep their original agent");
+      assert.ok(await count(q, "select 1 from audit_logs where table_name = 'customers' and context->>'reason' like 'Reassigned on disabling a team member: Left the company'") >= work.customers);
+      // Disabled: no access at all.
+      await switchTo(q, USERS.daniel);
+      assert.equal(await count(q, "select 1 from customers"), 0);
+      assert.equal(await count(q, "select 1 from organizations"), 0);
+    });
+  });
+
+  it("re-enables a disabled member, who gets access back", async () => {
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.aisha);
+      await q("select set_member_status($1, $2, 'active', 'Back for the summer season', null)", [ORG, USERS.tom.id]);
+      await switchTo(q, USERS.tom);
+      assert.equal(await count(q, "select 1 from organizations"), 1);
+    });
+  });
+
+  it("changes what a sales manager sees when an agent moves between teams", async () => {
+    assert.ok(customersOf("Priya N.").length > 0);
+    await asOwner(db, async (q) => {
+      await switchTo(q, USERS.maya);
+      assert.equal(await count(q, "select 1 from customers where assigned_to = $1", [USERS.priya.id]), 0);
+      await q.fails("insert into team_members (team_id, organization_id, user_id) values ($1, $2, $3)", [TEAM_ATLAS, ORG, USERS.priya.id], /row-level security/);
+      await switchTo(q, USERS.aisha);
+      await q("insert into team_members (team_id, organization_id, user_id) values ($1, $2, $3)", [TEAM_ATLAS, ORG, USERS.priya.id]);
+      await switchTo(q, USERS.maya);
+      assert.equal(await count(q, "select 1 from customers where assigned_to = $1", [USERS.priya.id]), customersOf("Priya N.").length);
+    });
+  });
+
+  it("keeps the team directory (emails, last sign-in) to admins", async () => {
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const rows = await q("select user_id, email, role, status from team_directory($1)", [ORG]);
+      assert.equal(rows.length, Object.values(USERS).filter((u) => !u.org).length);
+      assert.deepEqual(rows.find((r) => r.user_id === USERS.tom.id), { user_id: USERS.tom.id, email: USERS.tom.email, role: "sales_agent", status: "disabled" });
+    });
+    await asUser(db, USERS.maya.id, (q) => q.fails("select * from team_directory($1)", [ORG], /Only an admin/));
+    await asUser(db, USERS.maya.id, (q) => q.fails("select member_open_work($1, $2)", [ORG, USERS.sara.id], /Only an admin/));
+    await asUser(db, USERS.nora.id, (q) => q.fails("select * from team_directory($1)", [ORG], /Only an admin/));
   });
 });

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Logo } from "@/components/layout/Logo";
 import { LoginForm } from "./LoginForm";
 
@@ -20,6 +21,11 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
           <h1 className="text-xl font-semibold text-navy-900">Sign in</h1>
           <p className="mt-1 text-sm text-navy-400">Use the email your agency admin invited.</p>
           <LoginForm nextPath={nextPath} />
+          <p className="mt-4 text-center text-sm">
+            <Link href="/forgot-password" className="text-sky-brand-dark hover:underline">
+              Forgot password?
+            </Link>
+          </p>
         </div>
         <p className="mt-6 text-center text-xs text-navy-300">
           No account? Ask your agency admin for an invitation.
