@@ -4,7 +4,7 @@ Status: **schema, security, seed and tests are ready. Nothing is connected yet.*
 The app still runs on browser demo data. No credentials exist in this repository.
 
 ## Contents
-- `supabase/migrations/` — 13 ordered migrations (the only source of truth for the schema)
+- `supabase/migrations/` — 14 ordered migrations (the only source of truth for the schema)
 - `supabase/seed.sql` — **development data only** (generated; never load into production)
 - `supabase/scripts/build-seed.mjs` — builds `seed.sql` from the app's demo data (`npm run db:seed:build`)
 - `supabase/tests/` — PGlite test suite (`npm run db:test`) + a **test-only** Supabase stand-in (`supabase-shim.sql`)
@@ -26,6 +26,7 @@ The app still runs on browser demo data. No credentials exist in this repository
 | 11 | sensitive_data | passport encryption, reveal/save functions (audited) |
 | 12 | views | booking_financials, quotation_totals, customer_stats, money_ledger |
 | 13 | storage | private buckets `ticket-documents`, `travel-documents` + policies |
+| 14 | integrity_hardening | locked creator/requester columns, reviewer & verifier stamped by the database, archived records hidden from non-admins + archive functions, role filter on `quotation_totals` |
 
 ## Relationships (main links)
 ```
@@ -68,6 +69,39 @@ Rules live in `private.*` functions (one place per rule). Logged-out visitors (`
 privileges. Disabled members lose all access. There is **no public sign-up**: a user gets access only if
 an admin created an invitation for their email.
 
+## Archiving (soft delete)
+Customers, leads and quotations are archived by setting `deleted_at`, not deleted. Since migration 14:
+
+- **Archived rows are visible to admins only.** Restrictive RLS policies hide rows with `deleted_at` set
+  from every other role, and only admins can edit them.
+- **Non-admins cannot archive with a plain `update … set deleted_at`.** PostgreSQL checks the updated row
+  against the read policies, and an archived row would be hidden from them, so the update is rejected
+  with a row-level security error. They use the functions below instead.
+- **Admins** can archive with the functions or a plain update, and **restore** with
+  `update … set deleted_at = null`.
+
+| Function | Parameter | Archives |
+|---|---|---|
+| `archive_customer` | `p_customer_id uuid` | a customer |
+| `archive_lead` | `p_lead_id uuid` | a lead |
+| `archive_quotation` | `p_quotation_id uuid` | a quotation |
+
+All three behave the same way:
+- Return nothing (`void`). They set `deleted_at = now()` on the one row.
+- Allowed for whoever may **edit** that record under the existing rules (`private.can_write_customer`,
+  `private.can_write_lead`, `private.can_write_quotation`):
+  - customers: admin and support (any), sales manager (team's + unassigned), sales agent (assigned only);
+  - leads and quotations: admin, sales manager and sales agent within their scope (support cannot).
+- Fail with `You cannot archive this customer.` / `…lead.` / `…quotation.` (error code `42501`) when
+  the record doesn't exist, is already archived, or the caller isn't allowed to edit it.
+- Callable by signed-in users only (execute revoked from `anon`). They run as `SECURITY DEFINER` with
+  a pinned `search_path`; the audit log still records the caller as the actor.
+
+From the frontend:
+```ts
+const { error } = await supabase.rpc("archive_customer", { p_customer_id: customerId });
+```
+
 ## Sensitive data
 - Passport/ID numbers are **encrypted (pgcrypto AES-256)** with a key in **Supabase Vault**
   (`flyvera_document_key`). Only the last 4 characters are stored readable.
@@ -99,9 +133,10 @@ Sam (support), Tom (disabled), Nora (admin of the test agency).
 ```
 npm run db:test
 ```
-Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations + seed, and runs 56 tests:
+Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations + seed, and runs 61 tests:
 structure, seed totals vs the app, relationships and money rules, agency isolation, each of the six roles,
-passport protection, audit log and storage.
+passport protection, audit log, storage, and migration 14's integrity rules (locked columns, stamped
+reviewer/verifier, archiving).
 
 ### What PGlite tests do NOT cover
 PGlite is real PostgreSQL, but `supabase/tests/supabase-shim.sql` only imitates Supabase. Not tested:
