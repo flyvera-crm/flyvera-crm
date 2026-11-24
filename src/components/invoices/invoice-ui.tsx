@@ -6,8 +6,9 @@ import Link from "next/link";
 import type { Invoice, InvoiceStatus } from "@/types/invoices";
 import { balanceDue, invoiceStatus, validateCreateInvoice, validateIssueInvoice, validateVoidReason, type CreateInvoiceValues, type IssueInvoiceValues } from "@/lib/invoice-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
-import { siteConfig } from "@/config/site";
-import { QUOTE_TERMS } from "@/config/quote-options";
+import { useAgencySettings } from "@/lib/settings-store";
+import { invoiceSource, letterhead } from "@/lib/settings-rules";
+import { Letterhead, PaymentDetails } from "@/components/documents/Letterhead";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Field, inputClass } from "@/components/ui/form";
@@ -31,13 +32,13 @@ export function InvoiceStatusBadge({ invoice, today }: { invoice: Invoice; today
 
 export function InvoiceDocument({ invoice: inv, today }: { invoice: Invoice; today: string | null }) {
   const status = invoiceStatus(inv, today);
+  // Issued invoices print the agency details as they were at issue; drafts the current ones.
+  const source = invoiceSource(inv.issuer, useAgencySettings());
+  const head = letterhead(source.name, source.profile);
   return (
     <article className="overflow-hidden rounded-2xl border border-navy-100 bg-white shadow-sm print:rounded-none print:border-0 print:shadow-none">
       <header className="flex flex-col gap-4 bg-navy-900 px-6 py-6 text-white sm:flex-row sm:items-start sm:justify-between sm:px-10">
-        <div>
-          <p className="text-2xl font-bold tracking-[0.2em]">{siteConfig.name}</p>
-          <p className="text-xs font-medium uppercase tracking-wider text-gold-300">{siteConfig.tagline}</p>
-        </div>
+        <Letterhead head={head} subtitle={status === "Draft" ? "Draft invoice" : "Tax invoice"} />
         <div className="sm:text-right">
           <p className="text-xs font-semibold uppercase tracking-wider text-navy-200">{inv.number ? "Invoice" : "Draft invoice"}</p>
           <p className="font-mono text-lg">{inv.number ?? "Not numbered yet"}</p>
@@ -135,8 +136,9 @@ export function InvoiceDocument({ invoice: inv, today }: { invoice: Invoice; tod
 
         <footer className="space-y-2 border-t border-navy-100 pt-6 text-xs text-navy-500">
           {inv.notes && <p className="text-sm text-navy-700">{inv.notes}</p>}
+          {status !== "Void" && <PaymentDetails head={head} />}
           <ul className="list-disc space-y-0.5 pl-4">
-            {QUOTE_TERMS.map((t) => (
+            {source.terms.map((t) => (
               <li key={t}>{t}</li>
             ))}
           </ul>

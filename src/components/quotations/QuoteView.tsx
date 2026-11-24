@@ -8,7 +8,7 @@ import { useToast } from "@/components/ui/Toast";
 import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { compactPhone } from "@/lib/customer-validation";
-import { LOW_MARGIN_PERCENT } from "@/config/quote-options";
+import { useAgencySettings } from "@/lib/settings-store";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatDate, formatMoney } from "@/lib/format";
@@ -23,6 +23,7 @@ const BOOKINGS_CONNECTED = true;
 
 export function QuoteView({ id }: { id: string }) {
   const { quotes, today } = useQuotations();
+  const lowMarginPercent = useAgencySettings().defaults.lowMarginPercent;
   const { access } = useQuoteData();
   const actions = useQuoteActions();
   const { createFromQuote } = useBookingActions();
@@ -204,7 +205,7 @@ export function QuoteView({ id }: { id: string }) {
                 <dd
                   className={cn(
                     "rounded-md px-2 py-0.5 text-sm font-semibold tabular-nums",
-                    t.margin < LOW_MARGIN_PERCENT ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700",
+                    t.margin < lowMarginPercent ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700",
                   )}
                 >
                   {t.margin.toFixed(1)}%

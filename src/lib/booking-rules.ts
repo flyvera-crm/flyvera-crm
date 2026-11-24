@@ -3,6 +3,7 @@
 import type { Booking, BookingPayment, BookingStatus, PaymentMethod } from "@/types/crm";
 import { quoteTotals } from "@/lib/quote-math";
 import { addDays } from "@/lib/customer-history";
+import { BUILT_IN_DEFAULTS, type AgencyDefaults } from "@/lib/settings-rules";
 
 export const PAYMENT_METHODS: PaymentMethod[] = ["Card", "Bank transfer", "Cash", "Other"];
 export const BOOKING_FLOW: BookingStatus[] = ["Pending", "Confirmed", "Ticketed", "Completed"];
@@ -14,9 +15,6 @@ export const CANCEL_REASONS = [
   "Supplier cancelled",
   "Other",
 ];
-/** Deposit is due this many days after booking; the balance this many days before departure. */
-export const DEPOSIT_DAYS = 7;
-export const BALANCE_DAYS_BEFORE_DEPARTURE = 30;
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -68,8 +66,6 @@ export function refundableAmount(b: Booking) {
 
 /** Statuses where the agency has committed to suppliers and should pay them. */
 export const SUPPLIER_PAYABLE_STATUSES: BookingStatus[] = ["Confirmed", "Ticketed", "Completed"];
-/** Suppliers are paid this many days before departure. */
-export const SUPPLIER_DAYS_BEFORE_DEPARTURE = 14;
 
 export type PaymentState = "Paid in full" | "Part paid" | "Unpaid" | "Overdue" | "Cancelled";
 
@@ -173,15 +169,19 @@ export function validatePayment(v: PaymentFormValues, b: Booking, today: string)
 /* ── Creating a booking ── */
 
 /**
- * Dates for a new booking made from a quotation: deposit due DEPOSIT_DAYS after booking,
- * balance due BALANCE_DAYS_BEFORE_DEPARTURE before departure (never before the deposit).
+ * Dates for a new booking made from a quotation: deposit due `depositDays` after booking, balance due
+ * `balanceDaysBeforeDeparture` before departure (never before the deposit) — both from the agency settings.
  * A quotation without dates is booked 60 days out, to be updated with the customer.
  */
-export function bookingDates(q: { departDate?: string; returnDate?: string }, today: string) {
-  const depositDue = addDays(today, DEPOSIT_DAYS);
+export function bookingDates(
+  q: { departDate?: string; returnDate?: string },
+  today: string,
+  days: Pick<AgencyDefaults, "depositDays" | "balanceDaysBeforeDeparture"> = BUILT_IN_DEFAULTS,
+) {
+  const depositDue = addDays(today, days.depositDays);
   const departOn = q.departDate && q.departDate >= today ? q.departDate : addDays(today, 60);
   const returnOn = q.returnDate && q.returnDate >= departOn ? q.returnDate : undefined;
-  const balanceByDeparture = addDays(departOn, -BALANCE_DAYS_BEFORE_DEPARTURE);
+  const balanceByDeparture = addDays(departOn, -days.balanceDaysBeforeDeparture);
   return { departOn, returnOn, depositDue, balanceDue: balanceByDeparture > depositDue ? balanceByDeparture : depositDue };
 }
 

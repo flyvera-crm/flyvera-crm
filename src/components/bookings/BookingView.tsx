@@ -10,7 +10,8 @@ import { InvoicesCard } from "@/components/invoices/InvoicesCard";
 import { useBookingData, useBookings } from "@/lib/booking-store";
 import { BOOKING_FLOW, bookingMoney, daysBetween, isRefund, nextStep, paymentState, refundableAmount, refundState } from "@/lib/booking-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
-import { QUOTE_ITEM_TYPES, LOW_MARGIN_PERCENT } from "@/config/quote-options";
+import { QUOTE_ITEM_TYPES } from "@/config/quote-options";
+import { useAgencySettings } from "@/lib/settings-store";
 import { compactPhone } from "@/lib/customer-validation";
 import { lineTotal } from "@/lib/quote-math";
 import { Card, CardHeader } from "@/components/ui/Card";
@@ -35,6 +36,7 @@ export function BookingView({
 }) {
   const { bookings, today } = useBookings();
   const { access } = useBookingData();
+  const { lowMarginPercent } = useAgencySettings().defaults;
   const actions = useBookingActions();
   const [busy, startBusy] = useTransition();
   const [paying, setPaying] = useState(false);
@@ -386,7 +388,7 @@ export function BookingView({
                 <div className="my-2 border-t border-navy-50" />
                 <p className="text-xs font-semibold uppercase tracking-wider text-navy-400">Internal</p>
                 <Row label="Supplier cost" value={formatMoney(m.cost)} />
-                <Row label="Profit" value={`${formatMoney(m.profit)} (${m.margin.toFixed(1)}%)`} strong alert={m.margin < LOW_MARGIN_PERCENT} />
+                <Row label="Profit" value={`${formatMoney(m.profit)} (${m.margin.toFixed(1)}%)`} strong alert={m.margin < lowMarginPercent} />
               </dl>
             </Card>
           )}

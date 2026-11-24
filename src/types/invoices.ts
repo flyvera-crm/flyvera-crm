@@ -22,6 +22,8 @@ export type InvoicePassenger = { name: string; type: string; tickets: string[] }
 
 export type Invoice = {
   id: string; // database id (used in URLs: drafts have no number yet)
+  /** Agency details + invoice terms copied when issued (migration 20); absent on drafts. Database keys. */
+  issuer?: Record<string, unknown>;
   number?: string; // INV-2026-0001, given when issued
   storedStatus: InvoiceStoredStatus;
   bookingDbId: string;

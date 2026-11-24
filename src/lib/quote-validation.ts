@@ -2,7 +2,7 @@
 // The same rules run in the browser and in the Server Action (src/lib/actions/quotations.ts).
 import type { QuoteItemType, Quotation } from "@/types/crm";
 import { addDays } from "@/lib/customer-history";
-import { DEFAULT_TAX_RATE, DEFAULT_VALIDITY_DAYS } from "@/config/quote-options";
+import { BUILT_IN_DEFAULTS, type AgencyDefaults } from "@/lib/settings-rules";
 import { lineTotal } from "@/lib/quote-math";
 
 export type QuoteItemDraft = {
@@ -49,7 +49,11 @@ export function newItem(id: string, type: QuoteItemType = "Flight", description 
   return { id, type, description, quantity, unitPrice: "", cost: "" };
 }
 
-export function emptyQuoteForm(today: string): QuoteFormValues {
+/** A blank quotation; tax and validity come from the agency settings. */
+export function emptyQuoteForm(
+  today: string,
+  defaults: Pick<AgencyDefaults, "defaultTaxRate" | "quoteValidityDays"> = BUILT_IN_DEFAULTS,
+): QuoteFormValues {
   return {
     recipient: "",
     title: "",
@@ -60,8 +64,8 @@ export function emptyQuoteForm(today: string): QuoteFormValues {
     children: "0",
     items: [newItem("i1")],
     discount: "",
-    taxRate: String(DEFAULT_TAX_RATE),
-    validUntil: addDays(today, DEFAULT_VALIDITY_DAYS),
+    taxRate: String(defaults.defaultTaxRate),
+    validUntil: addDays(today, defaults.quoteValidityDays),
     agent: "",
     notes: "",
   };
@@ -154,9 +158,9 @@ export function quoteToForm(q: Quotation): QuoteFormValues {
   };
 }
 
-/** "Valid until" for a fresh copy of a quotation: the default validity period from today (used by Duplicate). */
-export function freshValidity(today: string) {
-  return addDays(today, DEFAULT_VALIDITY_DAYS);
+/** "Valid until" for a fresh copy of a quotation: the agency's validity period from today (used by Duplicate). */
+export function freshValidity(today: string, days = BUILT_IN_DEFAULTS.quoteValidityDays) {
+  return addDays(today, days);
 }
 
 /** Next free line-item id within a quotation ("i5" after i1…i4). */

@@ -5,9 +5,9 @@ import {
   bookingMoney,
   isRefund,
   paymentState,
-  SUPPLIER_DAYS_BEFORE_DEPARTURE,
   SUPPLIER_PAYABLE_STATUSES,
 } from "@/lib/booking-rules";
+import { BUILT_IN_DEFAULTS } from "@/lib/settings-rules";
 
 export type LedgerEntry = { booking: Booking; payment: BookingPayment; receiptNo: string; signedAmount: number };
 
@@ -74,13 +74,14 @@ export function customerDues(bookings: Booking[], today: string | null) {
 export type Payable = { booking: Booking; service: BookingService; dueDate: string };
 
 /** Services the agency still has to pay suppliers for, soonest first. */
-export function supplierPayables(bookings: Booking[]): Payable[] {
+/** `daysBefore` = the agency's "pay suppliers this many days before departure" setting. */
+export function supplierPayables(bookings: Booking[], daysBefore = BUILT_IN_DEFAULTS.supplierDaysBeforeDeparture): Payable[] {
   return bookings
     .filter((b) => SUPPLIER_PAYABLE_STATUSES.includes(b.status))
     .flatMap((booking) =>
       booking.services
         .filter((s) => s.cost > 0 && !s.supplierPaidOn)
-        .map((service) => ({ booking, service, dueDate: addDays(booking.departDate, -SUPPLIER_DAYS_BEFORE_DEPARTURE) })),
+        .map((service) => ({ booking, service, dueDate: addDays(booking.departDate, -daysBefore) })),
     )
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 }

@@ -8,6 +8,7 @@ import { refresh } from "next/cache";
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import type { Booking, BookingStatus, PaymentMethod } from "@/types/crm";
 import { createClient } from "@/lib/supabase/server";
+import { getAgencySettings } from "@/lib/data/settings";
 import { getCurrentUser } from "@/lib/auth";
 import { loadBooking } from "@/lib/data/bookings";
 import {
@@ -46,7 +47,7 @@ export async function createBookingFromQuote(quoteDbId: unknown, customerCode: u
   if (!quote) return { ok: false, message: "That quotation couldn't be found." };
   if (!customer) return { ok: false, message: `Customer ${customerCode} wasn't found.` };
 
-  const d = bookingDates({ departDate: quote.depart_on ?? undefined, returnDate: quote.return_on ?? undefined }, today());
+  const d = bookingDates({ departDate: quote.depart_on ?? undefined, returnDate: quote.return_on ?? undefined }, today(), (await getAgencySettings()).defaults);
   const { data: bookingId, error } = await supabase.rpc("create_booking_from_quotation", {
     p_quotation_id: quoteDbId,
     p_customer_id: customer.id,

@@ -16,7 +16,7 @@ export function invoiceAccess(role: AppRole | undefined): InvoiceAccess {
 
 // Named foreign keys, so the API never has to guess which link is meant.
 const INVOICE_COLUMNS =
-  "id, number, booking_id, status, issue_on, due_on, currency, subtotal, discount, tax_rate, tax, total, notes, bill_to, passengers, " +
+  "id, number, booking_id, status, issue_on, due_on, currency, subtotal, discount, tax_rate, tax, total, notes, bill_to, passengers, issuer, " +
   "void_reason, voided_at, created_at, " +
   "booking:bookings!invoices_booking_id_organization_id_fkey(code, title), " +
   "customer:customers!invoices_customer_id_organization_id_fkey(code, first_name, last_name, email, phone, city, country), " +
@@ -43,6 +43,7 @@ type InvoiceRow = {
   notes: string | null;
   bill_to: BillTo | null;
   passengers: InvoicePassenger[] | null;
+  issuer: Record<string, unknown> | null;
   void_reason: string | null;
   voided_at: string | null;
   created_at: string;
@@ -90,6 +91,7 @@ function mapInvoice(row: InvoiceRow, refunds: RefundRow[]): Invoice {
       country: customer?.country,
     },
     passengers: row.passengers ?? [],
+    issuer: row.issuer ?? undefined,
     issueOn: row.issue_on ?? undefined,
     dueOn: row.due_on ?? undefined,
     currency: row.currency,

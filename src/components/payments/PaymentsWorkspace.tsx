@@ -24,6 +24,7 @@ import { RefundRequestModal } from "@/components/bookings/RefundModals";
 import { RefundRequestsList } from "@/components/bookings/RefundRequestsList";
 import type { BookingAccess } from "@/lib/data/bookings";
 import { useBookingActions } from "@/components/bookings/use-booking-actions";
+import { useAgencySettings } from "@/lib/settings-store";
 
 type Tab = "received" | "due" | "refunds" | "suppliers";
 
@@ -38,7 +39,8 @@ export function PaymentsWorkspace() {
 
   const entries = useMemo(() => ledgerEntries(bookings), [bookings]);
   const dues = useMemo(() => customerDues(bookings, today), [bookings, today]);
-  const payables = useMemo(() => supplierPayables(bookings), [bookings]);
+  const supplierDays = useAgencySettings().defaults.supplierDaysBeforeDeparture;
+  const payables = useMemo(() => supplierPayables(bookings, supplierDays), [bookings, supplierDays]);
   const toSettle = bookings.filter((b) => refundState(b) === "To settle");
   // Refund requests waiting for a decision or for the money to be sent (migration 18).
   const pending = bookings.filter((b) => b.refundRequests?.some((r) => r.status === "Requested" || r.status === "Approved"));
@@ -520,12 +522,13 @@ function SuppliersTab({
   /** Absent for roles that don't record supplier payments. */
   onPaid?: (b: Booking, serviceId: string) => void;
 }) {
+  const supplierDays = useAgencySettings().defaults.supplierDaysBeforeDeparture;
   if (!payables.length) return <Empty icon="check" title="All suppliers paid" text="There are no unpaid services on confirmed bookings." />;
   const total = payables.reduce((s, p) => s + p.service.cost, 0);
   return (
     <>
       <p className="border-b border-navy-50 px-6 py-3 text-sm text-navy-500">
-        Pay suppliers at least 14 days before departure. Costs come from each booking&apos;s services.
+        Pay suppliers at least {supplierDays} days before departure. Costs come from each booking&apos;s services.
       </p>
       <ul className="divide-y divide-navy-50">
         {payables.map(({ booking: b, service: s, dueDate }) => {

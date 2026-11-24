@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useBookings } from "@/lib/booking-store";
 import { bookingMoney, isRefund } from "@/lib/booking-rules";
 import { balanceAfter, receiptNumber } from "@/lib/payment-ledger";
-import { siteConfig } from "@/config/site";
+import { useAgencySettings } from "@/lib/settings-store";
+import { letterhead } from "@/lib/settings-rules";
+import { Letterhead } from "@/components/documents/Letterhead";
 import { Card } from "@/components/ui/Card";
 import { Icon } from "@/components/icons";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -12,6 +14,7 @@ import { formatDate, formatMoney } from "@/lib/format";
 /** Printable payment receipt (or refund note) for one payment on a booking. */
 export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId: string }) {
   const { bookings } = useBookings();
+  const settings = useAgencySettings();
   const b = bookings.find((x) => x.id === bookingId);
   const p = b?.payments.find((x) => x.id === paymentId);
 
@@ -49,10 +52,7 @@ export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId
 
       <article className="overflow-hidden rounded-2xl border border-navy-100 bg-white shadow-sm print:rounded-none print:border-0 print:shadow-none">
         <header className="flex flex-col gap-4 bg-navy-900 px-6 py-6 text-white sm:flex-row sm:items-start sm:justify-between sm:px-10">
-          <div>
-            <p className="text-2xl font-bold tracking-[0.2em]">{siteConfig.name}</p>
-            <p className="text-xs font-medium uppercase tracking-wider text-gold-300">{refund ? "Refund note" : "Payment receipt"}</p>
-          </div>
+          <Letterhead head={letterhead(settings.name, settings.profile)} subtitle={refund ? "Refund note" : "Payment receipt"} />
           <div className="sm:text-right">
             <p className="font-mono text-lg">{no}</p>
             <p className="text-sm text-navy-200">{formatDate(p.date)}</p>
@@ -94,10 +94,10 @@ export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId
           </dl>
 
           <footer className="flex flex-col gap-4 border-t border-navy-100 pt-6 text-xs text-navy-500 sm:flex-row sm:justify-between">
-            <p>Thank you for travelling with {siteConfig.name}. Please keep this {refund ? "note" : "receipt"} for your records.</p>
+            <p>Thank you for travelling with {settings.name}. Please keep this {refund ? "note" : "receipt"} for your records.</p>
             <p className="sm:text-right">
               Issued by <span className="font-semibold text-navy-900">{b.agent}</span>
-              <span className="block">{siteConfig.product}</span>
+              <span className="block">{settings.profile.legalName || settings.name}</span>
             </p>
           </footer>
         </div>

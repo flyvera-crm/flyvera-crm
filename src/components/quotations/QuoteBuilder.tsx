@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState, useTransition, type FormEvent, ty
 import { useRouter } from "next/navigation";
 import type { Customer, Lead, QuoteItemType, Quotation } from "@/types/crm";
 import type { AgentOption } from "@/lib/data/team";
-import { LOW_MARGIN_PERCENT, QUOTE_ITEM_TYPES } from "@/config/quote-options";
+import { QUOTE_ITEM_TYPES } from "@/config/quote-options";
+import { useAgencySettings } from "@/lib/settings-store";
 import {
   draftItemsForTotals,
   itemFieldId,
@@ -73,6 +74,7 @@ export function QuoteBuilder({
   const router = useRouter();
   const toast = useToast();
   const { showSaved } = useQuoteData();
+  const lowMarginPercent = useAgencySettings().defaults.lowMarginPercent;
   const formRef = useRef<HTMLFormElement>(null);
   const [values, setValues] = useState(initialValues);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -204,7 +206,7 @@ export function QuoteBuilder({
   }
 
   const openLeads = leads.filter((l) => l.stage !== "Lost" && !l.customerId);
-  const lowMargin = totals.taxable > 0 && totals.margin < LOW_MARGIN_PERCENT;
+  const lowMargin = totals.taxable > 0 && totals.margin < lowMarginPercent;
 
   const saveButton = (extra?: string) => (
     <button
@@ -417,7 +419,7 @@ export function QuoteBuilder({
               </dl>
               {lowMargin && (
                 <p className="mt-2 flex items-start gap-1.5 text-xs font-medium text-amber-700">
-                  <Icon name="alert" size={13} className="mt-px shrink-0" /> Margin is below {LOW_MARGIN_PERCENT}%. Check prices or costs.
+                  <Icon name="alert" size={13} className="mt-px shrink-0" /> Margin is below {lowMarginPercent}%. Check prices or costs.
                 </p>
               )}
             </div>

@@ -7,6 +7,7 @@ import { refresh } from "next/cache";
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import type { QuoteItemType, QuoteStatus, Quotation } from "@/types/crm";
 import { createClient } from "@/lib/supabase/server";
+import { getAgencySettings } from "@/lib/data/settings";
 import { getCurrentUser } from "@/lib/auth";
 import { getTeam } from "@/lib/data/team";
 import { mapQuote, QUOTE_COLUMNS, type QuoteRow } from "@/lib/data/quotations";
@@ -209,7 +210,7 @@ export async function duplicateQuote(dbId: unknown): Promise<QuoteResult> {
       children: src.children,
       discount: src.discount,
       tax_rate: src.tax_rate,
-      valid_until: freshValidity(today()),
+      valid_until: freshValidity(today(), (await getAgencySettings()).defaults.quoteValidityDays),
       status: "Draft",
       notes: src.notes,
       prepared_by: src.prepared_by,

@@ -9,6 +9,7 @@
 // testing against a real Supabase staging project — see docs/database/README.md.
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { asAnon, asOwner, asUser, createDb, migrationFiles } from "./helpers.mjs";
 import { ORG, OTHER_ORG, USERS } from "../scripts/seed-identities.mjs";
 import { customers } from "../../src/lib/mock-customers.ts";
@@ -57,9 +58,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 19 migrations in order on an empty database", () => {
+  it("applies all 20 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 19);
+    assert.equal(files.length, 20);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -1350,5 +1351,155 @@ describe("19 · Dashboard data sources", () => {
 
     const noraSees = await countAll(USERS.nora.id);
     assert.deepEqual({ segments: noraSees.segments, events: noraSees.events, leadActivity: noraSees.leadActivity }, { segments: 0, events: 0, leadActivity: 0 }, "another agency: nothing");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("20 · Agency settings (migration 20)", () => {
+  const switchTo = async (q, user) => {
+    await q("set local role authenticated");
+    await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: user.id })]);
+  };
+  const PROFILE = {
+    legal_name: "Flyvera Travel & Tourism LLC",
+    address: "Office 1203, Bay Square 4",
+    city: "Dubai",
+    country: "United Arab Emirates",
+    phone: "+971 4 555 0100",
+    email: "Accounts@Flyvera.test",
+    website: "flyvera.test",
+    tax_number: "100123456700003",
+    iata_number: "96012345",
+    bank_name: "Emirates NBD",
+    account_name: "Flyvera Travel & Tourism LLC",
+    iban: "AE07 0331 2345 6789 0123 456",
+    swift: "ebiladax",
+    payment_note: "Please quote the invoice number.",
+  };
+  const DEFAULTS = {
+    quote_validity_days: 10,
+    default_tax_rate: 5,
+    low_margin_percent: 12,
+    deposit_days: 5,
+    balance_days_before_departure: 45,
+    supplier_days_before_departure: 21,
+    quote_terms: ["Prices valid for 10 days.", "  "],
+    invoice_terms: ["Payment due by the date shown."],
+  };
+  const SAVE = "select update_agency_settings($1, $2, $3, $4)";
+
+  it("lets an admin save the profile and defaults, keeping other settings", async () => {
+    await asOwner(db, async (q) => {
+      await q(`update organizations set settings = settings || '{"custom_flag": true}'::jsonb where id = $1`, [ORG]);
+      await switchTo(q, USERS.aisha);
+      await q(SAVE, [ORG, "FLYVERA TRAVEL", PROFILE, DEFAULTS]);
+      const [{ name, settings: s }] = await q("select name, settings from organizations where id = $1", [ORG]);
+      assert.equal(name, "FLYVERA TRAVEL");
+      assert.equal(s.custom_flag, true, "unrelated keys are kept");
+      assert.equal(s.quote_validity_days, 10);
+      assert.equal(Number(s.default_tax_rate), 5);
+      assert.deepEqual(s.quote_terms, ["Prices valid for 10 days."], "blank lines are dropped");
+      assert.equal(s.profile.email, "accounts@flyvera.test");
+      assert.equal(s.profile.iban, "AE070331234567890123456");
+      assert.equal(s.profile.swift, "EBILADAX");
+      // Clearing a field removes it from the printed details.
+      await q(SAVE, [ORG, "FLYVERA TRAVEL", { ...PROFILE, website: "" }, DEFAULTS]);
+      const [{ settings: after }] = await q("select settings from organizations where id = $1", [ORG]);
+      assert.equal(after.profile.website, undefined);
+      await q("reset role");
+      const [log] = await q(
+        "select actor_id, context->>'reason' as reason from audit_logs where table_name = 'organizations' and record_id = $1 order by id desc limit 1",
+        [ORG]);
+      assert.deepEqual(log, { actor_id: USERS.aisha.id, reason: "Agency settings updated" });
+    });
+  });
+
+  it("rejects values outside the allowed ranges, with a clear message", async () => {
+    const withoutMargin = { ...DEFAULTS };
+    delete withoutMargin.low_margin_percent;
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const bad = [
+        [{ ...DEFAULTS, default_tax_rate: 60 }, PROFILE, /Default tax must be from 0 to 50/],
+        [{ ...DEFAULTS, quote_validity_days: 0 }, PROFILE, /Quotation validity must be a whole number from 1 to 90/],
+        [{ ...DEFAULTS, deposit_days: 2.5 }, PROFILE, /Deposit due must be a whole number/],
+        [{ ...DEFAULTS, quote_terms: Array(11).fill("Line") }, PROFILE, /at most 10 lines/],
+        [{ ...DEFAULTS, invoice_terms: ["x".repeat(301)] }, PROFILE, /at most 300 characters/],
+        [{ ...DEFAULTS, surprise: 1 }, PROFILE, /Unknown setting: surprise/],
+        [withoutMargin, PROFILE, /Low-margin alert must be a whole number/],
+        [DEFAULTS, { ...PROFILE, email: "not-an-email" }, /valid email/],
+        [DEFAULTS, { ...PROFILE, swift: "ABC" }, /SWIFT/],
+        [DEFAULTS, { ...PROFILE, iban: "12345" }, /valid IBAN/],
+        [DEFAULTS, { ...PROFILE, logo: "x" }, /Unknown profile field: logo/],
+      ];
+      for (const [defaults, profile, message] of bad) await q.fails(SAVE, [ORG, "FLYVERA TRAVEL", profile, defaults], message);
+      await q.fails(SAVE, [ORG, "F", PROFILE, DEFAULTS], /agency name/);
+    });
+  });
+
+  it("keeps settings to admins, and blocks direct edits of the agency row", async () => {
+    for (const user of [USERS.maya, USERS.fiona, USERS.sam, USERS.nora]) {
+      await asUser(db, user.id, (q) => q.fails(SAVE, [ORG, "Hijacked", PROFILE, DEFAULTS], /Only an admin/));
+    }
+    await asUser(db, USERS.aisha.id, async (q) => {
+      await q.fails("update organizations set name = 'Direct' where id = $1", [ORG], /permission denied/);
+      await q.fails("update organizations set base_currency = 'EUR' where id = $1", [ORG], /permission denied/);
+    });
+    await asUser(db, USERS.sara.id, async (q) => {
+      assert.equal((await q("select name from organizations where id = $1", [ORG]))[0].name, "FLYVERA TRAVEL", "members still read their agency");
+    });
+  });
+
+  it("freezes the agency details on an invoice when it's issued", async () => {
+    await asOwner(db, async (q) => {
+      const [{ id: b }] = await q(
+        "select b.id from bookings b where b.organization_id = $1 and b.status <> 'Cancelled' and not exists (select 1 from invoices i where i.booking_id = b.id) order by b.code limit 1",
+        [ORG]);
+      await switchTo(q, USERS.aisha);
+      await q(SAVE, [ORG, "FLYVERA TRAVEL", PROFILE, DEFAULTS]);
+      await switchTo(q, USERS.fiona);
+      const [{ id }] = await q("select create_invoice($1, 0, current_date + 14, null) as id", [b]);
+      assert.equal((await q("select issuer from invoices where id = $1", [id]))[0].issuer, null, "drafts have no copy yet");
+      await q("select issue_invoice($1, current_date, current_date + 14)", [id]);
+      const [{ issuer }] = await q("select issuer from invoices where id = $1", [id]);
+      assert.equal(issuer.name, "FLYVERA TRAVEL");
+      assert.equal(issuer.tax_number, "100123456700003");
+      assert.equal(issuer.iban, "AE070331234567890123456");
+      assert.deepEqual(issuer.terms, ["Payment due by the date shown."], "invoice terms, not quotation terms");
+      // A later change of address doesn't alter the issued invoice.
+      await switchTo(q, USERS.aisha);
+      await q(SAVE, [ORG, "FLYVERA TRAVEL", { ...PROFILE, address: "New office, Tower 9" }, DEFAULTS]);
+      assert.equal((await q("select issuer->>'address' as a from invoices where id = $1", [id]))[0].a, "Office 1203, Bay Square 4");
+      await switchTo(q, USERS.fiona);
+      await q.fails("update invoices set issuer = '{}'::jsonb where id = $1", [id], /can't be changed/);
+    });
+  });
+
+  it("gives invoices issued before migration 20 a copy of the agency's details", async () => {
+    // The test database loads the seed AFTER the migrations, so its issued invoices have no copy yet —
+    // like invoices issued on staging before migration 20. Run the migration's own backfill statement.
+    const sql = readFileSync(new URL("../migrations/20261120002000_agency_settings.sql", import.meta.url), "utf8");
+    const backfill = sql.match(/^update public.invoices set issuer = .*;$/m)?.[0];
+    assert.ok(backfill, "the migration contains the backfill");
+    await asOwner(db, async (q) => {
+      assert.ok((await count(q, "select 1 from invoices where status <> 'Draft' and issuer is null")) > 0);
+      await q(backfill);
+      const rows = await q("select status, issuer from invoices where organization_id = $1", [ORG]);
+      const issued = rows.filter((r) => r.status !== "Draft");
+      assert.ok(issued.length > 0, "the seed has issued invoices");
+      for (const r of issued) {
+        assert.equal(r.issuer.name, "FLYVERA TRAVEL");
+        assert.equal(r.issuer.terms.length, 4, "the seed's quotation terms");
+      }
+      assert.ok(rows.filter((r) => r.status === "Draft").every((r) => r.issuer === null));
+    });
+  });
+
+  it("lets people edit only their own profile", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const mine = await q("update profiles set display_name = 'Sara K.', phone = '+971501112233' where id = $1 returning id", [USERS.sara.id]);
+      assert.equal(mine.length, 1);
+      const theirs = await q("update profiles set display_name = 'Hacked' where id = $1 returning id", [USERS.daniel.id]);
+      assert.equal(theirs.length, 0, "someone else's profile isn't updated");
+    });
   });
 });

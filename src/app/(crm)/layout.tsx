@@ -9,6 +9,8 @@ import { getQuoteData } from "@/lib/data/quotations";
 import { QuoteListProvider } from "@/lib/quote-store";
 import { getBookingData } from "@/lib/data/bookings";
 import { BookingListProvider } from "@/lib/booking-store";
+import { getAgencySettings } from "@/lib/data/settings";
+import { SettingsProvider } from "@/lib/settings-store";
 
 // Every page inside the (crm) folder gets the sidebar + top bar.
 // The "(crm)" folder name is a route group — it does NOT appear in the URL.
@@ -22,15 +24,17 @@ import { BookingListProvider } from "@/lib/booking-store";
 //  • QuoteListProvider – quotations from Supabase, shared by Quotations, Customers, Leads, Bookings and Reports
 //  • BookingListProvider – bookings (with payments) from Supabase, shared by Bookings, Payments, Customers,
 //                          Quotations, Dashboard and Reports
+//  • SettingsProvider – the agency's settings (defaults, letterhead) for quotes, documents and margins
 //  • The signed-in user (name, role) for the top bar. Logged-out visitors never
 //    get here: src/proxy.ts sends them to /login, and getCurrentUser() does too.
 export default async function CrmLayout({ children }: LayoutProps<"/">) {
-  const [user, { customers, access }, leadData, quoteData, bookingData] = await Promise.all([
+  const [user, { customers, access }, leadData, quoteData, bookingData, settings] = await Promise.all([
     getCurrentUser(),
     getCustomerData(),
     getLeadData(),
     getQuoteData(),
     getBookingData(),
+    getAgencySettings(),
   ]);
   const shellUser = {
     name: user.name,
@@ -41,6 +45,7 @@ export default async function CrmLayout({ children }: LayoutProps<"/">) {
 
   return (
     <ToastProvider>
+      <SettingsProvider settings={settings}>
       <CustomersProvider initialCustomers={customers} access={access}>
         <LeadListProvider initialLeads={leadData.leads} access={leadData.access}>
           <QuoteListProvider initialQuotes={quoteData.quotes} access={quoteData.access}>
@@ -50,6 +55,7 @@ export default async function CrmLayout({ children }: LayoutProps<"/">) {
           </QuoteListProvider>
         </LeadListProvider>
       </CustomersProvider>
+      </SettingsProvider>
     </ToastProvider>
   );
 }

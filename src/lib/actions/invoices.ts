@@ -6,6 +6,7 @@
 import { refresh } from "next/cache";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
+import { getAgencySettings } from "@/lib/data/settings";
 import { getCurrentUser } from "@/lib/auth";
 import { bookingDates } from "@/lib/booking-rules";
 import { validateCreateInvoice, validateIssueInvoice, validateVoidReason } from "@/lib/invoice-rules";
@@ -74,7 +75,7 @@ export async function invoiceFromQuote(quoteDbId: unknown): Promise<InvoiceActio
       customerId = (lead?.customer_id as string | null) ?? null;
     }
     if (!customerId) return { ok: false, message: "This quotation is for a lead. Convert the lead to a customer first, then create the booking." };
-    const d = bookingDates({ departDate: quote.depart_on ?? undefined, returnDate: quote.return_on ?? undefined }, today());
+    const d = bookingDates({ departDate: quote.depart_on ?? undefined, returnDate: quote.return_on ?? undefined }, today(), (await getAgencySettings()).defaults);
     const { data: bookingId, error } = await supabase.rpc("create_booking_from_quotation", {
       p_quotation_id: quote.id,
       p_customer_id: customerId,

@@ -13,12 +13,21 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Icon } from "@/components/icons";
 import { QuoteBuilder } from "./QuoteBuilder";
 import { useQuoteActions } from "./quote-actions";
+import { useAgencySettings } from "@/lib/settings-store";
+import type { AgencyDefaults } from "@/lib/settings-rules";
 
 /** Starting values for a new quotation, pre-filled from a lead or customer when given. */
-function prefill(today: string, agents: AgentOption[], defaultAgentId: string, lead?: Lead, customer?: Customer): QuoteFormValues {
+function prefill(
+  today: string,
+  defaults: AgencyDefaults,
+  agents: AgentOption[],
+  defaultAgentId: string,
+  lead?: Lead,
+  customer?: Customer,
+): QuoteFormValues {
   // "Prepared by": the lead's / customer's agent when this user may pick them, else the user.
   const agentFor = (userId?: string) => (userId && agents.some((a) => a.id === userId) ? userId : defaultAgentId);
-  const base = { ...emptyQuoteForm(today), agent: defaultAgentId };
+  const base = { ...emptyQuoteForm(today, defaults), agent: defaultAgentId };
   if (lead) {
     const future = (d?: string) => (d && d >= today ? d : "");
     const nights =
@@ -59,6 +68,7 @@ export function QuoteEditor({
   const leads = useLeadList();
   const { quotes } = useQuotations();
   const { access } = useQuoteData();
+  const settings = useAgencySettings();
   const { duplicate } = useQuoteActions();
 
   // "Today" (for validity dates) is the visitor's own date, only known after hydration.
@@ -141,7 +151,7 @@ export function QuoteEditor({
       />
       <QuoteBuilder
         mode="add"
-        initialValues={prefill(today, access.agentOptions, access.defaultAgentId, lead, customer)}
+        initialValues={prefill(today, settings.defaults, access.agentOptions, access.defaultAgentId, lead, customer)}
         customers={customers}
         leads={leads}
         agentOptions={access.agentOptions}

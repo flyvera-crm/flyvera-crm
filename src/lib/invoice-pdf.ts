@@ -3,8 +3,7 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import type { Invoice } from "@/types/invoices";
 import { balanceDue, invoiceStatus } from "@/lib/invoice-rules";
-import { siteConfig } from "@/config/site";
-import { QUOTE_TERMS } from "@/config/quote-options";
+import { invoiceSource, letterhead, type AgencySettings } from "@/lib/settings-rules";
 
 const NAVY = rgb(0.043, 0.122, 0.227);
 const GREY = rgb(0.33, 0.42, 0.55);
@@ -31,10 +30,13 @@ const money = (n: number, currency: string) =>
 const date = (iso?: string) =>
   iso ? new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "-";
 
-export async function invoicePdf(inv: Invoice, today: string): Promise<Uint8Array> {
+/** `settings` = the agency's current settings; issued invoices print their frozen copy instead (migration 20). */
+export async function invoicePdf(inv: Invoice, today: string, settings: AgencySettings): Promise<Uint8Array> {
+  const source = invoiceSource(inv.issuer, settings);
+  const head = letterhead(source.name, source.profile);
   const pdf = await PDFDocument.create();
   pdf.setTitle(inv.number ? `Invoice ${inv.number}` : "Draft invoice");
-  pdf.setAuthor(siteConfig.name);
+  pdf.setAuthor(head.name);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
@@ -69,19 +71,26 @@ export async function invoicePdf(inv: Invoice, today: string): Promise<Uint8Arra
     y = 841.89 - M;
   };
 
-  // Header band
-  page.drawRectangle({ x: 0, y: 841.89 - 110, width: W, height: 110, color: NAVY });
+  // Header band: agency name, then its details (only lines that are filled in)
+  const status = invoiceStatus(inv, today);
+  const headLines = [head.legalName, ...head.lines].filter(Boolean).slice(0, 4);
+  const band = 96 + headLines.length * 11;
+  page.drawRectangle({ x: 0, y: 841.89 - band, width: W, height: band, color: NAVY });
   y = 841.89 - 52;
-  text(siteConfig.name, M, 22, bold, rgb(1, 1, 1));
+  text(head.name, M, 22, bold, rgb(1, 1, 1));
   right(inv.number ? `INVOICE ${inv.number}` : "DRAFT INVOICE", W - M, 14, bold, rgb(1, 1, 1));
   y -= 18;
-  text(siteConfig.tagline ?? "", M, 9, font, GOLD);
+  text(status === "Draft" ? "Draft invoice" : "Tax invoice", M, 9, font, GOLD);
   right(inv.issueOn ? `Issued ${date(inv.issueOn)}` : "Not issued yet", W - M, 9, font, rgb(0.85, 0.9, 1));
   y -= 13;
   right(inv.dueOn ? `Due ${date(inv.dueOn)}` : "", W - M, 9, font, rgb(0.85, 0.9, 1));
+  y -= 2;
+  for (const l of headLines) {
+    text(l.slice(0, 95), M, 8, font, rgb(0.8, 0.85, 0.95));
+    y -= 11;
+  }
 
-  const status = invoiceStatus(inv, today);
-  y = 841.89 - 140;
+  y = 841.89 - band - 30;
   if (status === "Void") {
     text(`VOID${inv.voidReason ? ` - ${inv.voidReason}` : ""}`, M, 12, bold, rgb(0.75, 0.1, 0.15));
     y -= 22;
@@ -167,8 +176,24 @@ export async function invoicePdf(inv: Invoice, today: string): Promise<Uint8Arra
     }
   }
 
+  // How to pay (bank details), unless the invoice is void
+  const payLines = status === "Void" ? [] : [...head.bank, ...(head.paymentNote ? [head.paymentNote] : [])];
+  if (payLines.length) {
+    newPageIfNeeded(30 + payLines.length * 13);
+    y -= 16;
+    text("HOW TO PAY", M, 8, bold, GREY);
+    y -= 13;
+    for (const l of payLines) {
+      for (const w of wrap(l, W - 2 * M, 9)) {
+        newPageIfNeeded(12);
+        text(w, M, 9, font, NAVY);
+        y -= 12;
+      }
+    }
+  }
+
   // Notes & terms
-  const notes = [...(inv.notes ? [inv.notes] : []), ...QUOTE_TERMS];
+  const notes = [...(inv.notes ? [inv.notes] : []), ...source.terms];
   newPageIfNeeded(30 + notes.length * 24);
   y -= 16;
   text("NOTES & TERMS", M, 8, bold, GREY);
