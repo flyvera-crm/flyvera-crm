@@ -1,11 +1,16 @@
 import Link from "next/link";
 import { Icon } from "@/components/icons";
+import { signOut } from "@/lib/auth-actions";
+
+/** The signed-in user, as shown in the top bar. */
+export type TopbarUser = { name: string; email: string; initials: string; roleLabel: string };
 
 type TopbarProps = {
+  user: TopbarUser;
   onMenuClick: () => void;
 };
 
-export function Topbar({ onMenuClick }: TopbarProps) {
+export function Topbar({ user, onMenuClick }: TopbarProps) {
   return (
     <header className="sticky top-0 z-30 border-b border-navy-100 bg-white/85 backdrop-blur-md">
       <div className="flex h-16 items-center gap-3 px-4 sm:px-6 lg:px-8">
@@ -43,13 +48,26 @@ export function Topbar({ onMenuClick }: TopbarProps) {
             <span className="absolute right-2 top-2 size-2 rounded-full bg-gold-500 ring-2 ring-white" />
           </button>
           <div className="flex items-center gap-3 border-l border-navy-100 pl-3">
-            <div className="grid size-9 place-items-center rounded-full bg-gradient-to-br from-gold-300 to-gold-600 text-sm font-bold text-navy-950">
-              AK
+            <div
+              className="grid size-9 place-items-center rounded-full bg-gradient-to-br from-gold-300 to-gold-600 text-sm font-bold text-navy-950"
+              title={user.email}
+            >
+              {user.initials}
             </div>
             <div className="hidden leading-tight lg:block">
-              <p className="text-sm font-semibold text-navy-900">Aisha Khan</p>
-              <p className="text-xs text-navy-400">Agency Admin</p>
+              <p className="max-w-48 truncate text-sm font-semibold text-navy-900">{user.name}</p>
+              <p className="text-xs text-navy-400">{user.roleLabel}</p>
             </div>
+            <form action={signOut}>
+              <button
+                type="submit"
+                className="rounded-lg p-2 text-navy-500 hover:bg-navy-50 hover:text-navy-900"
+                aria-label="Sign out"
+                title="Sign out"
+              >
+                <Icon name="logout" />
+              </button>
+            </form>
           </div>
         </div>
       </div>
