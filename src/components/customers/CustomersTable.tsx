@@ -110,7 +110,7 @@ function SortHeader({
 }
 
 export function CustomersTable() {
-  const { customers, addedIds, onCustomerAdded, resetStoredCustomers, changedCount } = useCustomers();
+  const { customers, addedIds, onCustomerAdded } = useCustomers();
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [tier, setTier] = useState<CustomerTier | "All">("All");
@@ -270,15 +270,6 @@ export function CustomersTable() {
           )}
         </p>
         <div className="flex items-center gap-4">
-          {changedCount > 0 && (
-            <button
-              onClick={resetStoredCustomers}
-              className="text-navy-400 hover:text-rose-600"
-              title="Remove customers you added and undo edits (demo data comes back)"
-            >
-              Reset demo data
-            </button>
-          )}
           {hasFilters && (
             <button onClick={clearAll} className="font-medium text-sky-brand-dark hover:text-navy-900">
               Clear filters
@@ -337,10 +328,14 @@ export function CustomersTable() {
                     </p>
                     <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-navy-500">
                       <Badge tone={statusTone[c.status]}>{c.status}</Badge>
-                      <span>
-                        <span className="font-semibold text-navy-900">{c.trips}</span> trips
-                      </span>
-                      <span className="font-semibold text-navy-900">{formatCurrency(c.lifetimeValue)}</span>
+                      {!c.statsHidden && (
+                        <>
+                          <span>
+                            <span className="font-semibold text-navy-900">{c.trips}</span> trips
+                          </span>
+                          <span className="font-semibold text-navy-900">{formatCurrency(c.lifetimeValue)}</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -421,15 +416,19 @@ export function CustomersTable() {
                     <td className="px-3 py-3.5">
                       <Badge tone={statusTone[c.status]}>{c.status}</Badge>
                     </td>
-                    <td className="hidden px-3 py-3.5 text-right xl:table-cell tabular-nums text-navy-700">{c.trips}</td>
+                    <td className="hidden px-3 py-3.5 text-right xl:table-cell tabular-nums text-navy-700">
+                      {c.statsHidden ? <span className="text-navy-300">—</span> : c.trips}
+                    </td>
                     <td className="whitespace-nowrap py-3.5 pl-3 pr-6 text-right xl:pr-3 font-semibold tabular-nums text-navy-900">
-                      {formatCurrency(c.lifetimeValue)}
+                      {c.statsHidden ? <span className="font-normal text-navy-300">—</span> : formatCurrency(c.lifetimeValue)}
                     </td>
                     <td className="hidden whitespace-nowrap px-3 py-3.5 leading-tight xl:table-cell">
-                      {c.lastTrip ? (
+                      {c.statsHidden ? (
+                        <span className="text-navy-300">—</span>
+                      ) : c.lastTrip ? (
                         <>
                           <p className="text-navy-700">{formatDate(c.lastTrip)}</p>
-                          <p className="text-xs text-navy-400">Loves {c.favouriteDestination}</p>
+                          {c.favouriteDestination && <p className="text-xs text-navy-400">Loves {c.favouriteDestination}</p>}
                         </>
                       ) : (
                         <span className="text-navy-300">No trips yet</span>

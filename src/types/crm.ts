@@ -139,6 +139,22 @@ export type Customer = {
   seatPreference?: SeatPreference;
   whatsappOptIn?: boolean;
   notes?: string;
+  // Set for customers loaded from the database (not for demo data):
+  /** Database row id. The readable code (CU-1001) is `id`. */
+  dbId?: string;
+  /** User id of the assigned agent; `agent` holds their display name. */
+  agentId?: string;
+  /** Stored passport. The number is encrypted: only its last 4 characters are loaded. */
+  passport?: StoredPassport;
+  /** true when this user's role may not see trip and money figures. */
+  statsHidden?: boolean;
+};
+
+export type StoredPassport = {
+  documentId: string;
+  last4: string;
+  expiry: string; // ISO date
+  issuingCountry: string;
 };
 
 export type QuoteStatus = "Draft" | "Sent" | "Accepted" | "Declined";

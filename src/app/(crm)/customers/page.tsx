@@ -14,7 +14,7 @@ export default function CustomersPage() {
       <PageHeader
         eyebrow="Sales & Clients"
         title="Customers"
-        description="Traveller profiles, tiers and trip history. Showing demo data."
+        description="Traveller profiles, tiers and trip history."
         actions={
           <>
             <button className="flex items-center gap-2 rounded-xl border border-navy-100 bg-white px-4 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50">

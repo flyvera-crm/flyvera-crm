@@ -1,44 +1,22 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import type { Customer } from "@/types/crm";
-import {
-  clearStoredCustomers,
-  getServerStoredCustomers,
-  getStoredCustomers,
-  saveCustomer,
-  subscribeStoredCustomers,
-  updateCustomer,
-} from "@/lib/customer-store";
-import {
-  applyCustomerEdits,
-  customerToFormValues,
-  emptyCustomerForm,
-  nextCustomerId,
-  toCustomer,
-  type CustomerFormValues,
-} from "@/lib/customer-validation";
+import { saveCustomer } from "@/lib/actions/customers";
+import type { CustomerAccess } from "@/lib/data/customers";
+import { customerToFormValues, emptyCustomerForm, type CustomerFormValues } from "@/lib/customer-validation";
 import { Drawer } from "@/components/ui/Drawer";
 import { useToast } from "@/components/ui/Toast";
 import { Icon } from "@/components/icons";
 import { todayIso, useHydrated } from "@/lib/dates";
-import { CustomerForm, CUSTOMER_FORM_ID } from "./CustomerForm";
+import { CustomerForm, CUSTOMER_FORM_ID, type SubmitOutcome } from "./CustomerForm";
 
 export { todayIso };
 
 type AddedListener = (customer: Customer, all: Customer[]) => void;
 
 export type AddCustomerOptions = {
-  /** Pre-fill the form, e.g. when converting a lead. */
+  /** Pre-fill the form, e.g. when converting a lead. `agent` may be a user id or a display name. */
   initialValues?: Partial<CustomerFormValues>;
   /** Called after the new customer is saved. */
   onSaved?: (customer: Customer) => void;
@@ -48,17 +26,16 @@ export type AddCustomerOptions = {
 
 type CustomersContextValue = {
   customers: Customer[];
-  /** IDs of customers created in this browser (shown with a "New" tag). */
+  /** Codes of customers created in this session (shown with a "New" tag). */
   addedIds: Set<string>;
-  /** false during the server render / first paint, before browser-saved data is read. */
+  /** false during the server render / first paint (for date-dependent labels). */
   hydrated: boolean;
   getCustomer: (id: string) => Customer | undefined;
   openAddForm: (options?: AddCustomerOptions) => void;
   openEditForm: (customer: Customer) => void;
   onCustomerAdded: (listener: AddedListener) => () => void;
-  resetStoredCustomers: () => void;
-  /** How many customers were added or edited in this browser. */
-  changedCount: number;
+  /** What the signed-in user may do (from the database roles). */
+  access: CustomerAccess;
 };
 
 const CustomersContext = createContext<CustomersContextValue | null>(null);
@@ -71,17 +48,34 @@ export function useCustomers() {
 
 type FormState = ({ mode: "add" } & AddCustomerOptions) | { mode: "edit"; customer: Customer };
 
-export function CustomersProvider({ initialCustomers, children }: { initialCustomers: Customer[]; children: ReactNode }) {
-  const stored = useSyncExternalStore(subscribeStoredCustomers, getStoredCustomers, getServerStoredCustomers);
+/**
+ * Customers come from Supabase (loaded by the CRM layout on the server, filtered by
+ * Row Level Security). Saving calls a Server Action, which also refreshes that list.
+ */
+export function CustomersProvider({
+  initialCustomers,
+  access,
+  children,
+}: {
+  initialCustomers: Customer[];
+  access: CustomerAccess;
+  children: ReactNode;
+}) {
   const hydrated = useHydrated();
   const toast = useToast();
+  const [saving, startSaving] = useTransition();
 
-  const customers = useMemo(
-    () => [...stored.added, ...initialCustomers.map((c) => stored.edited[c.id] ?? c)],
-    [stored, initialCustomers],
-  );
-  const addedIds = useMemo(() => new Set(stored.added.map((c) => c.id)), [stored]);
-  const changedCount = stored.added.length + Object.keys(stored.edited).length;
+  // Just-saved customers, shown until the refreshed list from the server arrives.
+  const [recent, setRecent] = useState<{ base: Customer[]; items: Customer[] }>({ base: initialCustomers, items: [] });
+  const [addedIds, setAddedIds] = useState<Set<string>>(() => new Set());
+
+  const customers = useMemo(() => {
+    if (recent.base !== initialCustomers || recent.items.length === 0) return initialCustomers;
+    const byCode = new Map(recent.items.map((c) => [c.id, c]));
+    const updated = initialCustomers.map((c) => byCode.get(c.id) ?? c);
+    const fresh = recent.items.filter((c) => !initialCustomers.some((x) => x.id === c.id));
+    return [...fresh, ...updated];
+  }, [initialCustomers, recent]);
 
   const [form, setForm] = useState<FormState | null>(null); // stays set while the panel slides out
   const [open, setOpen] = useState(false);
@@ -91,51 +85,95 @@ export function CustomersProvider({ initialCustomers, children }: { initialCusto
 
   const getCustomer = useCallback((id: string) => customers.find((c) => c.id === id), [customers]);
 
+  /** Lead/quotation prefills carry an agent's display name; the form needs their user id. */
+  const resolveAgent = useCallback(
+    (value?: string) => {
+      if (value && access.agentOptions.some((a) => a.id === value)) return value;
+      const byName = value ? access.agentOptions.find((a) => a.name === value) : undefined;
+      return byName?.id ?? access.defaultAgentId;
+    },
+    [access],
+  );
+
   const openForm = useCallback((next: FormState) => {
     dirtyRef.current = false;
     setFormKey((k) => k + 1);
     setForm(next);
     setOpen(true);
   }, []);
-  const openAddForm = useCallback((options?: AddCustomerOptions) => openForm({ mode: "add", ...options }), [openForm]);
-  const openEditForm = useCallback((customer: Customer) => openForm({ mode: "edit", customer }), [openForm]);
+
+  const openAddForm = useCallback(
+    (options?: AddCustomerOptions) => {
+      if (!access.canCreate) {
+        toast({ tone: "info", message: "Your role can view customers but not add them. Ask a sales colleague or an admin." });
+        return;
+      }
+      openForm({ mode: "add", ...options });
+    },
+    [access.canCreate, openForm, toast],
+  );
+
+  const openEditForm = useCallback(
+    (customer: Customer) => {
+      if (!access.canEdit) return;
+      openForm({ mode: "edit", customer });
+    },
+    [access.canEdit, openForm],
+  );
 
   const requestClose = useCallback(() => {
+    if (saving) return;
     if (dirtyRef.current && !window.confirm("Discard your changes? Anything you typed will be lost.")) return;
     setOpen(false);
-  }, []);
+  }, [saving]);
 
   const handleSubmit = useCallback(
-    (values: CustomerFormValues) => {
-      dirtyRef.current = false;
-      if (form?.mode === "edit") {
-        const updated = applyCustomerEdits(form.customer, values);
-        updateCustomer(updated); // ← later: replace with a call to your backend/API
-        toast({
-          message: (
-            <p>
-              Changes to <span className="font-semibold">{updated.name}</span> saved.
-            </p>
-          ),
+    (values: CustomerFormValues) =>
+      new Promise<SubmitOutcome>((resolve) => {
+        startSaving(async () => {
+          const editing = form?.mode === "edit" ? form.customer : null;
+          const result = await saveCustomer({ dbId: editing?.dbId }, values);
+          if (!result.ok) {
+            resolve({ message: result.message, fieldErrors: result.fieldErrors });
+            return;
+          }
+
+          const saved = result.customer;
+          dirtyRef.current = false;
+          setRecent({ base: initialCustomers, items: [saved] });
+          if (!editing) setAddedIds((ids) => new Set(ids).add(saved.id));
+          setOpen(false);
+          resolve(undefined);
+
+          if (editing) {
+            toast({
+              message: (
+                <p>
+                  Changes to <span className="font-semibold">{saved.name}</span> saved.
+                  {result.warning && <span className="mt-1 block text-amber-200">{result.warning}</span>}
+                </p>
+              ),
+            });
+            return;
+          }
+          listeners.forEach((l) => l(saved, [saved, ...customers]));
+          if (form?.mode === "add" && form.onSaved) {
+            form.onSaved(saved); // the caller shows its own message
+            if (result.warning) toast({ tone: "info", message: result.warning });
+          } else {
+            toast({
+              message: (
+                <p>
+                  <span className="font-semibold">{saved.name}</span> was added as{" "}
+                  <span className="font-mono text-gold-300">{saved.id}</span>.
+                  {result.warning && <span className="mt-1 block text-amber-200">{result.warning}</span>}
+                </p>
+              ),
+            });
+          }
         });
-      } else {
-        const customer = toCustomer(values, nextCustomerId(customers), todayIso());
-        saveCustomer(customer); // ← later: replace with a call to your backend/API
-        listeners.forEach((l) => l(customer, [customer, ...customers]));
-        if (form?.onSaved) form.onSaved(customer); // the caller shows its own message
-        else
-          toast({
-            message: (
-              <p>
-                <span className="font-semibold">{customer.name}</span> was added as{" "}
-                <span className="font-mono text-gold-300">{customer.id}</span>.
-              </p>
-            ),
-          });
-      }
-      setOpen(false);
-    },
-    [form, customers, listeners, toast],
+      }),
+    [form, initialCustomers, customers, listeners, toast],
   );
 
   const onCustomerAdded = useCallback(
@@ -148,14 +186,9 @@ export function CustomersProvider({ initialCustomers, children }: { initialCusto
     [listeners],
   );
 
-  const resetStoredCustomers = useCallback(() => {
-    if (window.confirm(`Undo ${changedCount} change(s) — remove customers you added and restore edited demo customers?`))
-      clearStoredCustomers();
-  }, [changedCount]);
-
   const value = useMemo(
-    () => ({ customers, addedIds, hydrated, getCustomer, openAddForm, openEditForm, onCustomerAdded, resetStoredCustomers, changedCount }),
-    [customers, addedIds, hydrated, getCustomer, openAddForm, openEditForm, onCustomerAdded, resetStoredCustomers, changedCount],
+    () => ({ customers, addedIds, hydrated, getCustomer, openAddForm, openEditForm, onCustomerAdded, access }),
+    [customers, addedIds, hydrated, getCustomer, openAddForm, openEditForm, onCustomerAdded, access],
   );
 
   const editing = form?.mode === "edit" ? form.customer : null;
@@ -182,17 +215,19 @@ export function CustomersProvider({ initialCustomers, children }: { initialCusto
               <button
                 type="button"
                 onClick={requestClose}
-                className="rounded-xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
+                disabled={saving}
+                className="rounded-xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 form={CUSTOMER_FORM_ID}
-                className="flex items-center justify-center gap-2 rounded-xl bg-navy-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-navy-800"
+                disabled={saving}
+                className="flex items-center justify-center gap-2 rounded-xl bg-navy-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-navy-800 disabled:cursor-wait disabled:opacity-70"
               >
                 <Icon name="check" size={16} className="text-gold-300" strokeWidth={2.5} />
-                {editing ? "Save changes" : "Save customer"}
+                {saving ? "Saving…" : editing ? "Save changes" : "Save customer"}
               </button>
             </div>
           </div>
@@ -203,13 +238,22 @@ export function CustomersProvider({ initialCustomers, children }: { initialCusto
           <CustomerForm
             key={formKey}
             mode={form.mode}
-            customerId={editing ? editing.id : nextCustomerId(customers)}
+            customerId={editing ? editing.id : null}
             initialValues={
               editing
                 ? customerToFormValues(editing)
-                : form.mode === "add" && form.initialValues
-                  ? { ...emptyCustomerForm, ...form.initialValues }
-                  : undefined
+                : {
+                    ...emptyCustomerForm,
+                    ...(form.mode === "add" ? form.initialValues : undefined),
+                    agent: resolveAgent(form.mode === "add" ? form.initialValues?.agent : undefined),
+                  }
+            }
+            storedPassport={editing?.passport}
+            showPassport={access.canSeePassports}
+            agentOptions={
+              editing?.agentId && !access.agentOptions.some((a) => a.id === editing.agentId)
+                ? [...access.agentOptions, { id: editing.agentId, name: editing.agent }]
+                : access.agentOptions
             }
             existing={editing ? customers.filter((c) => c.id !== editing.id) : customers}
             today={todayIso()}

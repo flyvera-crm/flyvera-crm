@@ -1,14 +1,16 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
-import type { Customer } from "@/types/crm";
-import { AGENTS, CONTACT_METHODS, COUNTRIES, CUSTOMER_TIERS, SEAT_PREFERENCES } from "@/config/customer-options";
+import type { Customer, StoredPassport } from "@/types/crm";
+import type { AgentOption } from "@/lib/data/customers";
+import { CONTACT_METHODS, COUNTRIES, CUSTOMER_TIERS, SEAT_PREFERENCES } from "@/config/customer-options";
 import {
   emptyCustomerForm,
   NOTES_MAX,
   validateCustomer,
   type CustomerFormValues,
   type FieldName,
+  type Messages,
 } from "@/lib/customer-validation";
 import { Field, FieldMessages, FormSection, fieldA11y, inputClass } from "@/components/ui/form";
 import { Badge } from "@/components/ui/Badge";
@@ -20,11 +22,14 @@ export const CUSTOMER_FORM_ID = "customer-form";
 // Order used to jump to the first problem when saving.
 const FIELD_ORDER: FieldName[] = [
   "firstName", "lastName", "email", "phone", "dateOfBirth", "nationality", "city", "country",
-  "passportNumber", "passportExpiry", "tier", "agent", "preferredContact", "seatPreference",
-  "favouriteDestination", "whatsappOptIn", "notes",
+  "passportNumber", "passportExpiry", "passportIssuingCountry", "tier", "agent", "preferredContact",
+  "seatPreference", "favouriteDestination", "whatsappOptIn", "notes",
 ];
 
 const contactIcon: Record<string, IconName> = { WhatsApp: "chat", Email: "document", Phone: "bell" };
+
+/** What saving returned: nothing = success; otherwise a message and/or per-field errors. */
+export type SubmitOutcome = { message?: string; fieldErrors?: Messages } | undefined;
 
 /**
  * Used for both adding and editing a customer.
@@ -34,33 +39,60 @@ export function CustomerForm({
   mode,
   customerId,
   initialValues = emptyCustomerForm,
+  storedPassport,
+  showPassport,
+  agentOptions,
   existing,
   today,
   onSubmit,
   onDirty,
 }: {
   mode: "add" | "edit";
-  customerId: string;
+  /** The customer's code when editing; new customers get one when saved. */
+  customerId: string | null;
   initialValues?: CustomerFormValues;
+  /** The passport already on file (edit only). Its number is never sent to the browser. */
+  storedPassport?: StoredPassport;
+  /** false for roles that may not see travel documents: the section is hidden. */
+  showPassport: boolean;
+  agentOptions: AgentOption[];
   existing: Customer[];
   today: string;
-  onSubmit: (values: CustomerFormValues) => void;
+  onSubmit: (values: CustomerFormValues) => Promise<SubmitOutcome>;
   onDirty: () => void;
 }) {
   const [values, setValues] = useState<CustomerFormValues>(initialValues);
   const [touched, setTouched] = useState<Partial<Record<FieldName, boolean>>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [serverErrors, setServerErrors] = useState<Messages>({});
+  const [serverMessage, setServerMessage] = useState<string | null>(null);
 
-  const { errors, warnings } = useMemo(() => validateCustomer(values, existing, today), [values, existing, today]);
+  const { errors, warnings } = useMemo(
+    () => validateCustomer(values, existing, today, { storedPassport: Boolean(storedPassport) }),
+    [values, existing, today, storedPassport],
+  );
   const errorCount = Object.keys(errors).length;
 
   // Messages appear once a field has been left (blurred) or the user tried to save.
+  // Errors from the server (e.g. a duplicate only the database can see) show until the field changes.
   const show = (f: FieldName) => submitted || touched[f];
-  const err = (f: FieldName) => (show(f) ? errors[f] : undefined);
+  const err = (f: FieldName) => (show(f) ? errors[f] : undefined) ?? serverErrors[f];
   const warn = (f: FieldName) => (show(f) ? warnings[f] : undefined);
 
   function set<K extends FieldName>(field: K, value: CustomerFormValues[K]) {
-    setValues((v) => ({ ...v, [field]: value }));
+    setValues((v) => {
+      const next = { ...v, [field]: value };
+      // The issuing country usually matches the nationality: follow it until changed by hand.
+      if (field === "nationality" && (!v.passportIssuingCountry || v.passportIssuingCountry === v.nationality))
+        next.passportIssuingCountry = value as string;
+      return next;
+    });
+    if (serverErrors[field])
+      setServerErrors((current) => {
+        const rest = { ...current };
+        delete rest[field];
+        return rest;
+      });
     onDirty();
   }
   const touch = (f: FieldName) => () => setTouched((t) => (t[f] ? t : { ...t, [f]: true }));
@@ -76,18 +108,25 @@ export function CustomerForm({
     };
   }
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setSubmitted(true);
+    setServerMessage(null);
     const firstInvalid = FIELD_ORDER.find((f) => errors[f]);
     if (firstInvalid) {
       document.getElementById(firstInvalid)?.focus();
       return;
     }
-    onSubmit(values);
+    const outcome = await onSubmit(values);
+    if (!outcome) return;
+    setServerErrors(outcome.fieldErrors ?? {});
+    setServerMessage(outcome.message ?? null);
+    const firstServerError = FIELD_ORDER.find((f) => outcome.fieldErrors?.[f]);
+    if (firstServerError) document.getElementById(firstServerError)?.focus();
   }
 
   const previewName = `${values.firstName} ${values.lastName}`.trim();
+  const serverOnlyMessage = serverMessage && !(submitted && errorCount > 0) ? serverMessage : null;
 
   return (
     <form id={CUSTOMER_FORM_ID} onSubmit={handleSubmit} noValidate>
@@ -104,7 +143,13 @@ export function CustomerForm({
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold text-navy-900">{previewName || "New customer"}</p>
           <p className="truncate text-xs text-navy-400">
-            {mode === "add" ? "Will be saved as" : "Editing"} <span className="font-mono text-navy-600">{customerId}</span>
+            {mode === "edit" && customerId ? (
+              <>
+                Editing <span className="font-mono text-navy-600">{customerId}</span>
+              </>
+            ) : (
+              "Gets a customer code when saved"
+            )}
             {values.city.trim() && <> · {values.city.trim()}</>}
           </p>
         </div>
@@ -122,6 +167,13 @@ export function CustomerForm({
             </span>{" "}
             Check the highlighted fields below.
           </p>
+        </div>
+      )}
+
+      {serverOnlyMessage && (
+        <div role="alert" className="mx-5 mt-5 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-sm text-rose-700 sm:mx-7">
+          <Icon name="alert" size={18} className="mt-px shrink-0" />
+          <p className="font-semibold">{serverOnlyMessage}</p>
         </div>
       )}
 
@@ -155,20 +207,36 @@ export function CustomerForm({
         </Field>
       </FormSection>
 
-      <FormSection title="Travel document" description="Needed for ticketing. Add both, or leave both empty.">
-        <Field id="passportNumber" label="Passport number" error={err("passportNumber")}>
-          <input
-            {...bind("passportNumber")}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="e.g. 123456789"
-            className={inputClass(!!err("passportNumber"), "h-11 font-mono uppercase placeholder:font-sans placeholder:normal-case")}
-          />
-        </Field>
-        <Field id="passportExpiry" label="Passport expiry" error={err("passportExpiry")} warning={warn("passportExpiry")}>
-          <input {...bind("passportExpiry")} type="date" />
-        </Field>
-      </FormSection>
+      {showPassport && (
+        <FormSection
+          title="Travel document"
+          description={
+            storedPassport
+              ? `Passport ending ${storedPassport.last4} is on file (stored encrypted). Leave the number empty to keep it.`
+              : "Needed for ticketing. Stored encrypted — afterwards only the last 4 characters are shown."
+          }
+        >
+          <Field
+            id="passportNumber"
+            label={storedPassport ? "New passport number" : "Passport number"}
+            error={err("passportNumber")}
+          >
+            <input
+              {...bind("passportNumber")}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={storedPassport ? `Leave empty to keep ••••${storedPassport.last4}` : "e.g. 123456789"}
+              className={inputClass(!!err("passportNumber"), "h-11 font-mono uppercase placeholder:font-sans placeholder:normal-case")}
+            />
+          </Field>
+          <Field id="passportExpiry" label="Passport expiry" error={err("passportExpiry")} warning={warn("passportExpiry")}>
+            <input {...bind("passportExpiry")} type="date" />
+          </Field>
+          <Field id="passportIssuingCountry" label="Issuing country" error={err("passportIssuingCountry")}>
+            <input {...bind("passportIssuingCountry")} list="country-options" autoComplete="off" placeholder="Usually the nationality" />
+          </Field>
+        </FormSection>
+      )}
 
       <FormSection title="Account & preferences">
         {/* Tier: radio "cards" */}
@@ -211,9 +279,11 @@ export function CustomerForm({
         <Field id="agent" label="Assigned agent" required error={err("agent")}>
           <div className="relative">
             <select {...bind("agent")} className={inputClass(!!err("agent"), "h-11 appearance-none pr-9")}>
-              <option value="">Choose an agent…</option>
-              {AGENTS.map((a) => (
-                <option key={a}>{a}</option>
+              <option value="">{agentOptions.length ? "Choose an agent…" : "No agents available"}</option>
+              {agentOptions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
               ))}
             </select>
             <Icon name="chevronDown" size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-navy-400" />

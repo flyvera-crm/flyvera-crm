@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import type { Customer, CustomerStatus, CustomerTier } from "@/types/crm";
 import { Card, CardHeader } from "@/components/ui/Card";
@@ -9,6 +9,7 @@ import { Icon, type IconName } from "@/components/icons";
 import { cn, formatCurrency, formatDate, formatMoney, formatMonthYear, initials } from "@/lib/format";
 import { addDays, getCustomerTrips, MAX_TRIPS_SHOWN, type Trip, type TripStatus } from "@/lib/customer-history";
 import { compactPhone } from "@/lib/customer-validation";
+import { revealPassport } from "@/lib/actions/customers";
 import { todayIso, useCustomers } from "./CustomersProvider";
 import { displayStatus, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
@@ -27,15 +28,21 @@ function yearsBetween(fromIso: string, toIso: string) {
   return ty - fy - (tm < fm || (tm === fm && td < fd) ? 1 : 0);
 }
 
+// Bookings and quotations still run on demo data whose codes overlap real customers
+// (CU-1001…), and the trip history / activity cards are generated. Until those modules
+// read the database, real profiles show a note instead of mixing in demo records.
+const LINKED_MODULES_CONNECTED = false;
+
 export function CustomerProfile({ id }: { id: string }) {
-  const { getCustomer, hydrated, addedIds, openEditForm } = useCustomers();
+  const { getCustomer, hydrated, addedIds, openEditForm, access } = useCustomers();
   const customer = getCustomer(id);
 
-  // Customers you added only exist in this browser, so wait for it before saying "not found".
-  if (!customer) return hydrated ? <NotFound id={id} /> : <ProfileSkeleton />;
+  // Customers are loaded on the server, so a missing one is either not there or not visible to this role.
+  if (!customer) return <NotFound id={id} />;
 
   // Date-based labels (age, passport status) use the visitor's own "today", so only after hydration.
   const today = hydrated ? todayIso() : null;
+  const onEdit = access.canEdit ? () => openEditForm(customer) : undefined;
 
   return (
     <div className="space-y-6">
@@ -43,30 +50,52 @@ export function CustomerProfile({ id }: { id: string }) {
         <Icon name="arrowRight" size={16} className="rotate-180" /> All customers
       </Link>
 
-      <ProfileHeader customer={customer} isNew={addedIds.has(customer.id)} onEdit={() => openEditForm(customer)} />
+      <ProfileHeader customer={customer} isNew={addedIds.has(customer.id)} onEdit={onEdit} />
       <ProfileStats customer={customer} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="space-y-6">
           <ContactCard customer={customer} today={today} />
-          <PassportCard customer={customer} today={today} onEdit={() => openEditForm(customer)} />
+          {access.canSeePassports && <PassportCard customer={customer} today={today} onEdit={onEdit} />}
           <PreferencesCard customer={customer} />
         </div>
         <div className="space-y-6 lg:col-span-2">
-          <NotesCard customer={customer} onEdit={() => openEditForm(customer)} />
-          <BookingsCard customer={customer} today={today} />
-          <QuotesCard customer={customer} today={today} />
-          <TripsCard customer={customer} />
-          <ActivityCard customer={customer} />
+          <NotesCard customer={customer} onEdit={onEdit} />
+          {LINKED_MODULES_CONNECTED ? (
+            <>
+              <BookingsCard customer={customer} today={today} />
+              <QuotesCard customer={customer} today={today} />
+              <TripsCard customer={customer} />
+              <ActivityCard customer={customer} />
+            </>
+          ) : (
+            <PendingHistoryCard />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
+function PendingHistoryCard() {
+  return (
+    <Card>
+      <CardHeader title="Bookings, quotations & trips" />
+      <div className="flex items-start gap-3 p-5 sm:px-6">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-navy-50 text-navy-400">
+          <Icon name="plane" size={18} />
+        </span>
+        <p className="text-sm text-navy-500">
+          Bookings, quotations and trip history will appear here once those modules are connected to the database.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 /* ─────────────────────────── Header ─────────────────────────── */
 
-function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isNew: boolean; onEdit: () => void }) {
+function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isNew: boolean; onEdit?: () => void }) {
   const phoneDigits = compactPhone(c.phone).replace("+", "");
   return (
     <section className="relative overflow-hidden rounded-3xl bg-navy-900 p-5 text-white sm:p-7">
@@ -118,18 +147,22 @@ function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isN
           <HeaderAction href={`https://wa.me/${phoneDigits}`} icon="chat" external>
             WhatsApp
           </HeaderAction>
-          <HeaderAction href={`mailto:${c.email}`} icon="document">
-            Email
-          </HeaderAction>
+          {c.email && (
+            <HeaderAction href={`mailto:${c.email}`} icon="document">
+              Email
+            </HeaderAction>
+          )}
           <HeaderAction href={`/quotations/new?customer=${c.id}`} icon="plus">
             New quotation
           </HeaderAction>
-          <button
-            onClick={onEdit}
-            className="flex items-center justify-center gap-2 rounded-xl bg-gold-500 px-4 py-2.5 text-sm font-semibold text-navy-950 shadow-sm transition hover:bg-gold-400"
-          >
-            <Icon name="settings" size={16} /> Edit profile
-          </button>
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="flex items-center justify-center gap-2 rounded-xl bg-gold-500 px-4 py-2.5 text-sm font-semibold text-navy-950 shadow-sm transition hover:bg-gold-400"
+            >
+              <Icon name="settings" size={16} /> Edit profile
+            </button>
+          )}
         </div>
       </div>
     </section>
@@ -155,6 +188,14 @@ function HeaderAction({ href, icon, external, children }: { href: string; icon: 
 /* ─────────────────────────── Stats ─────────────────────────── */
 
 function ProfileStats({ customer: c }: { customer: Customer }) {
+  if (c.statsHidden) {
+    return (
+      <Card className="flex items-center gap-3 p-4 text-sm text-navy-500 sm:p-5">
+        <Icon name="wallet" size={16} className="text-navy-400" />
+        Trip counts and spending aren&apos;t shown for your role.
+      </Card>
+    );
+  }
   const stats: { label: string; value: string; hint: string; icon: IconName }[] = [
     { label: "Lifetime value", value: formatCurrency(c.lifetimeValue), hint: "Total spent", icon: "wallet" },
     { label: "Trips booked", value: String(c.trips), hint: c.trips === 1 ? "1 trip so far" : `${c.trips} trips so far`, icon: "plane" },
@@ -212,9 +253,13 @@ function ContactCard({ customer: c, today }: { customer: Customer; today: string
       <CardHeader title="Contact details" />
       <dl className="divide-y divide-navy-50 p-5 sm:px-6">
         <DetailRow icon="document" label="Email">
-          <a href={`mailto:${c.email}`} className="text-sky-brand-dark hover:underline">
-            {c.email}
-          </a>
+          {c.email ? (
+            <a href={`mailto:${c.email}`} className="text-sky-brand-dark hover:underline">
+              {c.email}
+            </a>
+          ) : (
+            <Missing />
+          )}
         </DetailRow>
         <DetailRow icon="chat" label="Mobile / WhatsApp">
           <a href={`tel:${compactPhone(c.phone)}`} className="text-sky-brand-dark hover:underline">
@@ -249,15 +294,34 @@ function ContactCard({ customer: c, today }: { customer: Customer; today: string
   );
 }
 
-function PassportCard({ customer: c, today, onEdit }: { customer: Customer; today: string | null; onEdit: () => void }) {
-  const [revealed, setRevealed] = useState(false);
+function PassportCard({ customer: c, today, onEdit }: { customer: Customer; today: string | null; onEdit?: () => void }) {
+  const passport = c.passport;
+  // The full number is only fetched on request (the database logs each reveal).
+  const [revealed, setRevealed] = useState<{ documentId: string; number: string } | null>(null);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [revealing, startReveal] = useTransition();
+  const shownNumber = revealed && revealed.documentId === passport?.documentId ? revealed.number : null;
+
+  function toggleReveal() {
+    if (!passport) return;
+    if (shownNumber) {
+      setRevealed(null);
+      return;
+    }
+    setRevealError(null);
+    startReveal(async () => {
+      const result = await revealPassport(passport.documentId);
+      if (result.ok) setRevealed({ documentId: passport.documentId, number: result.number });
+      else setRevealError(result.message);
+    });
+  }
 
   let status: { tone: BadgeTone; label: string; note: string } | null = null;
-  if (c.passportExpiry && today) {
+  if (passport && today) {
     const sixMonths = addDays(today, 182);
-    if (c.passportExpiry <= today)
+    if (passport.expiry <= today)
       status = { tone: "danger", label: "Expired", note: "Ask for a renewed passport before booking." };
-    else if (c.passportExpiry < sixMonths)
+    else if (passport.expiry < sixMonths)
       status = { tone: "warning", label: "Expires soon", note: "Under 6 months left — many countries will refuse entry." };
     else status = { tone: "success", label: "Valid", note: "More than 6 months of validity left." };
   }
@@ -265,35 +329,41 @@ function PassportCard({ customer: c, today, onEdit }: { customer: Customer; toda
   return (
     <Card>
       <CardHeader title="Travel document" action={status && <Badge tone={status.tone}>{status.label}</Badge>} />
-      {c.passportNumber ? (
+      {passport ? (
         <div className="p-5 sm:px-6">
           {/* Passport-style card */}
           <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-navy-800 to-navy-950 p-4 text-white">
             <Icon name="globe" size={84} strokeWidth={0.8} className="absolute -right-4 -top-4 text-white/10" />
             <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-gold-300">Passport</p>
             <div className="mt-2 flex items-center justify-between gap-3">
-              <p className="font-mono text-lg tracking-widest">
-                {revealed ? c.passportNumber : `${"•".repeat(Math.max(c.passportNumber.length - 3, 3))}${c.passportNumber.slice(-3)}`}
-              </p>
+              <p className="font-mono text-lg tracking-widest">{shownNumber ?? `•••••${passport.last4}`}</p>
               <button
-                onClick={() => setRevealed((r) => !r)}
-                aria-pressed={revealed}
-                className="relative rounded-lg bg-white/10 px-2.5 py-1 text-xs font-medium hover:bg-white/20"
+                onClick={toggleReveal}
+                disabled={revealing}
+                aria-pressed={Boolean(shownNumber)}
+                className="relative rounded-lg bg-white/10 px-2.5 py-1 text-xs font-medium hover:bg-white/20 disabled:cursor-wait disabled:opacity-60"
               >
-                {revealed ? "Hide" : "Show"}
+                {revealing ? "Loading…" : shownNumber ? "Hide" : "Show"}
               </button>
             </div>
-            <div className="mt-3 flex gap-6 text-xs">
+            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-xs">
               <div>
-                <p className="text-navy-300">Nationality</p>
-                <p className="font-medium">{c.nationality ?? "—"}</p>
+                <p className="text-navy-300">Issued by</p>
+                <p className="font-medium">{passport.issuingCountry}</p>
               </div>
               <div>
                 <p className="text-navy-300">Expires</p>
-                <p className="font-medium">{c.passportExpiry ? formatDate(c.passportExpiry) : "—"}</p>
+                <p className="font-medium">{formatDate(passport.expiry)}</p>
               </div>
             </div>
           </div>
+          <p className="mt-3 text-xs text-navy-400">Stored encrypted. Every time the full number is shown, it&apos;s recorded in the audit log.</p>
+          {revealError && (
+            <p role="alert" className="mt-2 flex items-start gap-1.5 text-xs font-medium text-rose-600">
+              <Icon name="alert" size={14} className="mt-px shrink-0" />
+              {revealError}
+            </p>
+          )}
           {status && (
             <p
               className={cn(
@@ -309,9 +379,11 @@ function PassportCard({ customer: c, today, onEdit }: { customer: Customer; toda
       ) : (
         <div className="flex flex-col items-center p-6 text-center">
           <p className="text-sm text-navy-400">No passport on file yet — needed before tickets can be issued.</p>
-          <button onClick={onEdit} className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-sky-brand-dark hover:text-navy-900">
-            <Icon name="plus" size={16} /> Add passport details
-          </button>
+          {onEdit && (
+            <button onClick={onEdit} className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-sky-brand-dark hover:text-navy-900">
+              <Icon name="plus" size={16} /> Add passport details
+            </button>
+          )}
         </div>
       )}
     </Card>
@@ -337,15 +409,17 @@ function PreferencesCard({ customer: c }: { customer: Customer }) {
   );
 }
 
-function NotesCard({ customer: c, onEdit }: { customer: Customer; onEdit: () => void }) {
+function NotesCard({ customer: c, onEdit }: { customer: Customer; onEdit?: () => void }) {
   return (
     <Card>
       <CardHeader
         title="Notes"
         action={
-          <button onClick={onEdit} className="text-sm font-medium text-sky-brand-dark hover:text-navy-900">
-            {c.notes ? "Edit" : "Add note"}
-          </button>
+          onEdit && (
+            <button onClick={onEdit} className="text-sm font-medium text-sky-brand-dark hover:text-navy-900">
+              {c.notes ? "Edit" : "Add note"}
+            </button>
+          )
         }
       />
       <div className="p-5 sm:px-6">
@@ -499,31 +573,13 @@ function NotFound({ id }: { id: string }) {
       </div>
       <h1 className="mt-5 text-xl font-semibold text-navy-900">Customer not found</h1>
       <p className="mt-2 max-w-md text-sm text-navy-400">
-        There&apos;s no customer with ID <span className="font-mono text-navy-700">{id}</span>. It may have been removed, or it was
-        added in a different browser.
+        There&apos;s no customer <span className="font-mono text-navy-700">{id}</span> that you can see. It may have been
+        archived, or it&apos;s assigned to someone outside your team.
       </p>
       <Link href="/customers" className="mt-6 rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
         Back to customers
       </Link>
     </Card>
-  );
-}
-
-function ProfileSkeleton() {
-  return (
-    <div className="animate-pulse space-y-6" aria-busy="true" aria-label="Loading customer">
-      <div className="h-4 w-28 rounded bg-navy-100" />
-      <div className="h-40 rounded-3xl bg-navy-100" />
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-24 rounded-2xl bg-navy-50" />
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="h-80 rounded-2xl bg-navy-50" />
-        <div className="h-80 rounded-2xl bg-navy-50 lg:col-span-2" />
-      </div>
-    </div>
   );
 }
 

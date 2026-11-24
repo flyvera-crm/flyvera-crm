@@ -3,8 +3,10 @@
 import { Icon } from "@/components/icons";
 import { useCustomers } from "./CustomersProvider";
 
+/** Hidden for roles that can only read customers (ticketing, finance). */
 export function AddCustomerButton() {
-  const { openAddForm } = useCustomers();
+  const { openAddForm, access } = useCustomers();
+  if (!access.canCreate) return null;
   return (
     <button
       type="button"
