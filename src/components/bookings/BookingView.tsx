@@ -3,6 +3,8 @@
 import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import type { BookingPayment } from "@/types/crm";
+import type { BookingTicketing } from "@/types/ticketing";
+import { TicketingPanel } from "@/components/tickets/TicketingPanel";
 import { useBookingData, useBookings } from "@/lib/booking-store";
 import { BOOKING_FLOW, bookingMoney, daysBetween, isRefund, nextStep, paymentState, refundState } from "@/lib/booking-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
@@ -17,7 +19,7 @@ import { BookingStatusBadge, PaymentBadge, TimingChip } from "./booking-ui";
 import { useBookingActions } from "./use-booking-actions";
 import { CancelModal, EditPaymentModal, RecordPaymentModal, RefundModal } from "./PaymentModals";
 
-export function BookingView({ id }: { id: string }) {
+export function BookingView({ id, ticketing }: { id: string; ticketing: BookingTicketing | null }) {
   const { bookings, today } = useBookings();
   const { access } = useBookingData();
   const actions = useBookingActions();
@@ -314,6 +316,9 @@ export function BookingView({ id }: { id: string }) {
               )}
             </Card>
           )}
+
+          {/* ── Ticketing: passengers, reservations & flights, tickets, documents ── */}
+          {ticketing && <TicketingPanel booking={b} data={ticketing} today={today} />}
         </div>
 
         {/* ── Side column ── */}

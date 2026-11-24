@@ -35,7 +35,10 @@ export const BOOKING_COLUMNS =
   "services:booking_services!booking_services_booking_id_organization_id_fkey(id, position, service_type, description, quantity, unit_price, cost, supplier_ref), " +
   "events:booking_events!booking_events_booking_id_organization_id_fkey(body, occurred_at), " +
   "payments:payments!payments_booking_id_organization_id_fkey(id, sequence_no, amount, method, received_on, note, reference, created_at, updated_at), " +
-  "refunds:refunds!refunds_booking_id_organization_id_fkey(id, sequence_no, amount, method, status, paid_on, note)";
+  "refunds:refunds!refunds_booking_id_organization_id_fkey(id, sequence_no, amount, method, status, paid_on, note), " +
+  // For the "Issue tickets" step: who's travelling and who holds an issued ticket.
+  "pax:passengers!passengers_booking_id_organization_id_fkey(id), " +
+  "tix:tickets!tickets_booking_id_organization_id_fkey(passenger_id, status)";
 
 type One<T> = T | T[] | null;
 const one = <T,>(v: One<T>) => (Array.isArray(v) ? (v[0] ?? null) : v);
@@ -94,6 +97,8 @@ export type BookingRow = {
     paid_on: string | null;
     note: string | null;
   }[] | null;
+  pax: { id: string }[] | null;
+  tix: { passenger_id: string; status: string }[] | null;
 };
 
 export type SupplierTxRow = { booking_service_id: string | null; kind: "Payment" | "Refund" | "Credit note"; amount: number | string; occurred_on: string };
@@ -117,6 +122,7 @@ export function mapBooking(
   team: Team,
   supplier: Map<string, { net: number; lastPaidOn?: string }>,
   moneyHidden: boolean,
+  ticketsVisible: boolean,
 ): Booking {
   const customer = one(row.customer);
   const services = [...(row.services ?? [])].sort((a, b) => a.position - b.position);
@@ -190,6 +196,11 @@ export function mapBooking(
       .sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))
       .map((e) => ({ date: e.occurred_at.slice(0, 10), text: e.body })),
     moneyHidden,
+    ticketing: {
+      visible: ticketsVisible,
+      passengers: (row.pax ?? []).length,
+      ticketedPassengers: new Set((row.tix ?? []).filter((t) => t.status === "Issued").map((t) => t.passenger_id)).size,
+    },
   };
 }
 
@@ -200,6 +211,9 @@ const EDIT_ROLES: AppRole[] = ["admin", "sales_manager", "sales_agent", "ticketi
 const SERVICE_ROLES: AppRole[] = ["admin", "sales_manager", "sales_agent", "ticketing_agent"];
 const RECORD_MONEY_ROLES: AppRole[] = ["admin", "finance_manager"];
 const SUPPLIER_ROLES: AppRole[] = ["admin", "finance_manager", "ticketing_agent"];
+/** Roles that see both passengers and tickets (needed to complete the ticketing step). */
+const TICKETING_VIEW_ROLES: AppRole[] = ["admin", "ticketing_agent", "sales_manager", "sales_agent"];
+const ticketsVisible = (role: AppRole | undefined) => Boolean(role && TICKETING_VIEW_ROLES.includes(role));
 
 export function bookingAccess(role: AppRole | undefined): BookingAccess {
   const has = (roles: AppRole[]) => Boolean(role && roles.includes(role));
@@ -233,7 +247,7 @@ export async function loadBooking(supabase: SupabaseClient, dbId: string): Promi
   const { data } = await supabase.from("bookings").select(BOOKING_COLUMNS).eq("id", dbId).maybeSingle<BookingRow>();
   if (!data) return null;
   const [team, supplier] = await Promise.all([getTeam(), supplierTransactions(supabase, access, [dbId])]);
-  return mapBooking(data, team, supplier, !access.canSeeMoney);
+  return mapBooking(data, team, supplier, !access.canSeeMoney, ticketsVisible(user.membership?.role));
 }
 
 /** All bookings the signed-in user may see, plus what they may do. Cached per request. */
@@ -257,5 +271,6 @@ export const getBookingData = cache(async (): Promise<{ bookings: Booking[]; acc
   ]);
   if (res.error) throw new Error(`Couldn't load bookings: ${res.error.message}`);
 
-  return { bookings: (res.data ?? []).map((row) => mapBooking(row, team, supplier, !access.canSeeMoney)), access };
+  const visible = ticketsVisible(membership.role);
+  return { bookings: (res.data ?? []).map((row) => mapBooking(row, team, supplier, !access.canSeeMoney, visible)), access };
 });

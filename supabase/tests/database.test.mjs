@@ -57,9 +57,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 15 migrations in order on an empty database", () => {
+  it("applies all 16 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 15);
+    assert.equal(files.length, 16);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -421,8 +421,9 @@ describe("8 · Role: Ticketing Agent (Leo)", () => {
       assert.equal(await count(q, "select 1 from tickets"), 8);
       const [pax] = await q("select id from passengers where booking_id = $1 and is_lead_passenger", [ids["FV-10481"]]);
       const [pnr] = await q("select id from pnr_records where booking_id = $1", [ids["FV-10481"]]);
-      const t = await q(`insert into tickets (organization_id, booking_id, passenger_id, pnr_id, ticket_number, issuing_airline, base_fare, taxes)
-                         values ($1, $2, $3, $4, '1762104810009', 'EK', 800, 180) returning total`, [ORG, ids["FV-10481"], pax.id, pnr.id]);
+      // Since migration 16, tickets are recorded through issue_ticket() only.
+      const [{ id: ticketId }] = await q("select issue_ticket($1, $2, $3, '1762104810009', 'EK', 800, 180, now()) as id", [ids["FV-10481"], pax.id, pnr.id]);
+      const t = await q("select total from tickets where id = $1", [ticketId]);
       assert.equal(Number(t[0].total), 980);
       assert.equal(N(await q("update booking_services set supplier_ref = 'ADD-55191' where booking_id = $1 and service_type = 'Hotel' returning id", [ids["FV-10481"]])), 1);
     });
@@ -810,6 +811,114 @@ describe("14 · Booking creation & payment corrections (migration 15)", () => {
     for (const user of [USERS.sara, USERS.leo, USERS.sam, USERS.nora]) {
       await asUser(db, user.id, (q) =>
         q.fails("select correct_payment($1, $2, $3, $4, null, null, 'Trying to edit')", [p.id, Number(p.amount) - 1, p.received_on, p.method], /Only Finance or an admin/));
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("15 · Ticketing integrity (migration 16)", () => {
+  const ISSUE = "select issue_ticket($1, $2, $3, $4, 'EK', 800, 180, now()) as id";
+  const lookup = async (q, code) => {
+    const [b] = await q("select id from bookings where code = $1 and organization_id = $2", [code, ORG]);
+    const [pax] = await q("select id from passengers where booking_id = $1 order by is_lead_passenger desc limit 1", [b.id]);
+    const [pnr] = await q("select id from pnr_records where booking_id = $1 limit 1", [b.id]);
+    return { booking: b.id, pax: pax?.id, pnr: pnr?.id };
+  };
+  const asLeoViaOwner = async (q) => {
+    await q("set local role authenticated");
+    await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: USERS.leo.id })]);
+  };
+
+  it("records an issued ticket with an audit entry and a timeline line", async () => {
+    await asOwner(db, async (q) => {
+      const x = await lookup(q, "FV-10481");
+      await asLeoViaOwner(q);
+      const [{ id }] = await q(ISSUE, [x.booking, x.pax, x.pnr, "176 2104810 077"]); // spaces are tidied
+      const [t] = await q("select ticket_number, status, issued_by from tickets where id = $1", [id]);
+      assert.deepEqual(t, { ticket_number: "1762104810077", status: "Issued", issued_by: USERS.leo.id });
+      const [e] = await q("select body from booking_events where booking_id = $1 order by created_at desc limit 1", [x.booking]);
+      assert.match(e.body, /^Ticket 1762104810077 issued by EK for .+ \(USD 980\.00\)$/);
+      await q("reset role");
+      const [log] = await q("select action, actor_id from audit_logs where table_name = 'tickets' and record_id = $1", [id]);
+      assert.deepEqual(log, { action: "INSERT", actor_id: USERS.leo.id });
+    });
+  });
+
+  it("never records a ticket without the real issuance details", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const ok = await lookup(q, "FV-10481");
+      await q.fails(ISSUE, [ok.booking, ok.pax, ok.pnr, "12345"], /13-digit ticket number/);
+      await q.fails(ISSUE, [ok.booking, ok.pax, null, "1762104810078"], /airline reservation \(PNR\)/);
+      // A booking that isn't confirmed yet (Pending) can't have tickets.
+      const [pending] = await q("select id from bookings where code = 'FV-10480' and organization_id = $1", [ORG]);
+      const [pax] = await q(
+        "insert into passengers (organization_id, booking_id, first_name, last_name) values ($1, $2, 'Test', 'Traveller') returning id",
+        [ORG, pending.id]);
+      const [pnr] = await q("insert into pnr_records (organization_id, booking_id, record_locator) values ($1, $2, 'PEND01') returning id", [ORG, pending.id]);
+      await q.fails(ISSUE, [pending.id, pax.id, pnr.id, "1762104810079"], /confirmed booking/);
+      await q("update pnr_records set status = 'Cancelled' where id = $1", [ok.pnr]);
+      await q.fails(ISSUE, [ok.booking, ok.pax, ok.pnr, "1762104810080"], /active reservation/);
+    });
+  });
+
+  it("keeps every ticket link inside its own booking", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const a = await lookup(q, "FV-10481");
+      const other = await lookup(q, "FV-10479");
+      await q.fails(ISSUE, [a.booking, other.pax, a.pnr, "1762104810081"], /passenger isn't on this booking/);
+      await q.fails(ISSUE, [a.booking, a.pax, other.pnr, "1762104810082"], /PNR isn't on this booking/);
+      await q.fails(
+        `insert into booking_segments (organization_id, booking_id, pnr_id, segment_no, marketing_carrier, flight_number, origin, destination, departs_at, arrives_at)
+         values ($1, $2, $3, 99, 'EK', '1', 'DXB', 'LHR', now() + interval '10 days', now() + interval '10 days 7 hours')`,
+        [ORG, a.booking, other.pnr], /PNR isn't on this booking/);
+      const [otherTicket] = await q("select id from tickets where booking_id = $1 limit 1", [other.booking]);
+      await q.fails(
+        `insert into ticket_documents (organization_id, booking_id, ticket_id, document_kind, storage_path, file_name, mime_type, size_bytes)
+         values ($1, $2, $3, 'E-ticket', $4, 'x.pdf', 'application/pdf', 100)`,
+        [ORG, a.booking, otherTicket.id, `${ORG}/${a.booking}/x.pdf`], /ticket isn't on this booking/);
+    });
+  });
+
+  it("only moves a ticket forward, with a reason that is logged", async () => {
+    await asOwner(db, async (q) => {
+      const [t] = await q("select id, booking_id, ticket_number from tickets where status = 'Issued' and organization_id = $1 limit 1", [ORG]);
+      await asLeoViaOwner(q);
+      const change = "select change_ticket_status($1, $2, $3)";
+      await q.fails(change, [t.id, "Voided", ""], /reason/);
+      await q.fails(change, [t.id, "Issued", "Trying to re-issue"], /voided, refunded or exchanged/);
+      await q(change, [t.id, "Voided", "Wrong passenger name on ticket"]);
+      const [after] = await q("select status, voided_at from tickets where id = $1", [t.id]);
+      assert.equal(after.status, "Voided");
+      assert.ok(after.voided_at);
+      await q.fails(change, [t.id, "Refunded", "Changing my mind"], /voided ticket can't change status again/);
+      const [e] = await q("select body from booking_events where booking_id = $1 order by created_at desc limit 1", [t.booking_id]);
+      assert.equal(e.body, `Ticket ${t.ticket_number} voided — reason: Wrong passenger name on ticket`);
+      await q("reset role");
+      const [log] = await q(
+        "select changed_fields, old_data->>'status' old_status, new_data->>'status' new_status, context->>'reason' reason from audit_logs where table_name = 'tickets' and record_id = $1 order by id desc limit 1",
+        [t.id]);
+      assert.deepEqual(log.changed_fields, ["status", "voided_at"]);
+      assert.equal(log.old_status, "Issued");
+      assert.equal(log.new_status, "Voided");
+      assert.equal(log.reason, "Wrong passenger name on ticket");
+    });
+  });
+
+  it("blocks direct edits and deletes of tickets, and other roles from ticketing", async () => {
+    const [t] = (await db.query("select id, booking_id, passenger_id, pnr_id from tickets where status = 'Issued' and organization_id = $1 limit 1", [ORG])).rows;
+    await asUser(db, USERS.leo.id, async (q) => {
+      await q.fails("update tickets set base_fare = 1 where id = $1", [t.id], /permission denied/);
+      await q.fails("delete from tickets where id = $1", [t.id], /permission denied/);
+      await q.fails(
+        "insert into tickets (organization_id, booking_id, passenger_id, pnr_id, ticket_number, issuing_airline, base_fare) values ($1, $2, $3, $4, '1762104810090', 'EK', 1)",
+        [ORG, t.booking_id, t.passenger_id, t.pnr_id], /permission denied/);
+    });
+    await asUser(db, USERS.aisha.id, (q) => q.fails("delete from tickets where id = $1", [t.id], /permission denied/));
+    for (const user of [USERS.sara, USERS.fiona, USERS.sam, USERS.nora]) {
+      await asUser(db, user.id, async (q) => {
+        await q.fails("select issue_ticket($1, $2, $3, '1762104810091', 'EK', 1, 0, now())", [t.booking_id, t.passenger_id, t.pnr_id], /Only Ticketing or an admin/);
+        await q.fails("select change_ticket_status($1, 'Voided', 'Not allowed here')", [t.id], /Only Ticketing or an admin/);
+      });
     }
   });
 });

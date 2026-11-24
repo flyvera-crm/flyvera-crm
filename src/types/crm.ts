@@ -104,6 +104,11 @@ export type Booking = {
   agentId?: string;
   /** true for roles that may not see prices or payments (support): money figures are blank, not zero. */
   moneyHidden?: boolean;
+  /**
+   * Passengers and how many hold an issued ticket (database bookings). `visible` is false for
+   * roles that can't see passengers or tickets — they can't complete the ticketing step.
+   */
+  ticketing?: { visible: boolean; passengers: number; ticketedPassengers: number };
 };
 
 export type Flight = {

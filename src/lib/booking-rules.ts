@@ -115,7 +115,7 @@ export function nextStep(b: Booking, today: string | null): { next: BookingStatu
           ? `Add supplier references for ${missing} service${missing === 1 ? "" : "s"} first.`
           : balance > 0
             ? "Collect the full balance before issuing tickets."
-            : undefined,
+            : flightTicketsBlocker(b),
       };
     }
     case "Ticketed": {
@@ -129,6 +129,19 @@ export function nextStep(b: Booking, today: string | null): { next: BookingStatu
     default:
       return null;
   }
+}
+
+/**
+ * A booking with flights is only "Ticketed" when every passenger on it holds an issued ticket
+ * (recorded from the airline / GDS — see migration 16). Bookings without flights skip this.
+ */
+export function flightTicketsBlocker(b: Booking): string | undefined {
+  if (!b.ticketing || !b.services.some((s) => s.type === "Flight")) return undefined;
+  const { visible, passengers, ticketedPassengers } = b.ticketing;
+  if (!visible) return "Ticketing issues the flight tickets and completes this step.";
+  if (passengers === 0) return "Add the passengers and record their flight tickets first.";
+  const missing = passengers - ticketedPassengers;
+  return missing > 0 ? `Record issued tickets for ${missing} passenger${missing === 1 ? "" : "s"} first.` : undefined;
 }
 
 export const STATUS_EVENT: Record<BookingStatus, string> = {
