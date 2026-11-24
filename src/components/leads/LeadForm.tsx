@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import type { Customer, Lead, LeadPriority } from "@/types/crm";
-import { AGENTS } from "@/config/customer-options";
+import type { AgentOption } from "@/lib/data/team";
 import { LEAD_PRIORITIES, LEAD_SOURCES, LEAD_STAGES, TRIP_TYPES } from "@/config/lead-options";
 import {
   emptyLeadForm,
@@ -10,6 +10,7 @@ import {
   validateLead,
   type LeadField,
   type LeadFormValues,
+  type LeadMessages,
 } from "@/lib/lead-validation";
 import { Field, FormSection, fieldA11y, inputClass } from "@/components/ui/form";
 import { Icon } from "@/components/icons";
@@ -38,10 +39,14 @@ function SelectBox(props: React.SelectHTMLAttributes<HTMLSelectElement> & { inva
   );
 }
 
+/** What saving returned: nothing = success; otherwise a message and/or per-field errors. */
+export type LeadSubmitOutcome = { message?: string; fieldErrors?: LeadMessages } | undefined;
+
 export function LeadForm({
   mode,
   leadId,
   initialValues = emptyLeadForm,
+  agentOptions,
   otherLeads,
   customers,
   today,
@@ -49,17 +54,21 @@ export function LeadForm({
   onDirty,
 }: {
   mode: "add" | "edit";
-  leadId: string;
+  /** The lead's code when editing; new leads get one when saved. */
+  leadId: string | null;
   initialValues?: LeadFormValues;
+  agentOptions: AgentOption[];
   otherLeads: Lead[];
   customers: Customer[];
   today: string;
-  onSubmit: (values: LeadFormValues) => void;
+  onSubmit: (values: LeadFormValues) => Promise<LeadSubmitOutcome>;
   onDirty: () => void;
 }) {
   const [values, setValues] = useState<LeadFormValues>(initialValues);
   const [touched, setTouched] = useState<Partial<Record<LeadField, boolean>>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [serverErrors, setServerErrors] = useState<LeadMessages>({});
+  const [serverMessage, setServerMessage] = useState<string | null>(null);
 
   const { errors, warnings } = useMemo(
     () => validateLead(values, otherLeads, customers, today),
@@ -67,12 +76,19 @@ export function LeadForm({
   );
   const errorCount = Object.keys(errors).length;
 
+  // Errors from the server show until the field changes.
   const show = (f: LeadField) => submitted || touched[f];
-  const err = (f: LeadField) => (show(f) ? errors[f] : undefined);
+  const err = (f: LeadField) => (show(f) ? errors[f] : undefined) ?? serverErrors[f];
   const warn = (f: LeadField) => (show(f) ? warnings[f] : undefined);
 
   function set<K extends LeadField>(field: K, value: LeadFormValues[K]) {
     setValues((v) => ({ ...v, [field]: value }));
+    if (serverErrors[field])
+      setServerErrors((current) => {
+        const rest = { ...current };
+        delete rest[field];
+        return rest;
+      });
     onDirty();
   }
   const touch = (f: LeadField) => () => setTouched((t) => (t[f] ? t : { ...t, [f]: true }));
@@ -87,22 +103,34 @@ export function LeadForm({
     };
   }
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setSubmitted(true);
+    setServerMessage(null);
     const firstInvalid = FIELD_ORDER.find((f) => errors[f]);
     if (firstInvalid) {
       document.getElementById(firstInvalid)?.focus();
       return;
     }
-    onSubmit(values);
+    const outcome = await onSubmit(values);
+    if (!outcome) return;
+    setServerErrors(outcome.fieldErrors ?? {});
+    setServerMessage(outcome.message ?? null);
+    const firstServerError = FIELD_ORDER.find((f) => outcome.fieldErrors?.[f]);
+    if (firstServerError) document.getElementById(firstServerError)?.focus();
   }
 
   return (
     <form id={LEAD_FORM_ID} onSubmit={handleSubmit} noValidate>
       <div className="flex items-center justify-between gap-3 border-b border-navy-50 bg-canvas/70 px-5 py-3 text-xs text-navy-500 sm:px-7">
         <span>
-          {mode === "add" ? "Will be saved as" : "Editing"} <span className="font-mono text-navy-700">{leadId}</span>
+          {mode === "edit" && leadId ? (
+            <>
+              Editing <span className="font-mono text-navy-700">{leadId}</span>
+            </>
+          ) : (
+            "Gets a lead code when saved"
+          )}
         </span>
         <span>
           <span className="text-rose-500">*</span> Required
@@ -118,6 +146,13 @@ export function LeadForm({
             </span>{" "}
             Check the highlighted fields below.
           </p>
+        </div>
+      )}
+
+      {serverMessage && !(submitted && errorCount > 0) && (
+        <div role="alert" className="mx-5 mt-5 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-sm text-rose-700 sm:mx-7">
+          <Icon name="alert" size={18} className="mt-px shrink-0" />
+          <p className="font-semibold">{serverMessage}</p>
         </div>
       )}
 
@@ -206,9 +241,11 @@ export function LeadForm({
         </fieldset>
         <Field id="agent" label="Assigned agent" required error={err("agent")}>
           <SelectBox {...bind("agent")} invalid={!!err("agent")}>
-            <option value="">Choose an agent…</option>
-            {AGENTS.map((a) => (
-              <option key={a}>{a}</option>
+            <option value="">{agentOptions.length ? "Choose an agent…" : "No agents available"}</option>
+            {agentOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
             ))}
           </SelectBox>
         </Field>

@@ -12,15 +12,22 @@ import { displayStatus, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
 
+// Quotations still run on demo data whose lead codes can match real leads. Until that
+// module reads the database, the panel shows a note instead of mixing in demo quotes.
+const QUOTATIONS_CONNECTED = false;
+
 export function LeadDetails({
   lead,
   today,
+  canEdit,
   onEdit,
   onMove,
   onConvert,
 }: {
   lead: Lead;
   today: string | null;
+  /** false for support agents: they can read leads but not change them. */
+  canEdit: boolean;
   onEdit: () => void;
   onMove: (stage: LeadStage) => void;
   onConvert: () => void;
@@ -54,8 +61,8 @@ export function LeadDetails({
               <li key={s.value} className="flex-1">
                 <button
                   onClick={() => onMove(s.value)}
-                  disabled={current}
-                  title={current ? `Current stage: ${s.value}` : `Move to ${s.value}`}
+                  disabled={current || !canEdit}
+                  title={current ? `Current stage: ${s.value}` : canEdit ? `Move to ${s.value}` : s.value}
                   className="group w-full text-left disabled:cursor-default"
                 >
                   <span
@@ -89,6 +96,20 @@ export function LeadDetails({
       </section>
 
       {/* ── Primary actions ── */}
+      {!canEdit ? (
+        lead.customerId ? (
+          <Link
+            href={`/customers/${lead.customerId}`}
+            className="flex items-center justify-center gap-2 rounded-xl bg-gold-500 px-4 py-2.5 text-sm font-semibold text-navy-950 hover:bg-gold-400"
+          >
+            <Icon name="users" size={16} /> View customer {lead.customerId}
+          </Link>
+        ) : (
+          <p className="rounded-xl bg-navy-50 px-3.5 py-2.5 text-sm text-navy-500">
+            You can read this lead. Its assigned agent or an admin can update it.
+          </p>
+        )
+      ) : (
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {isLost ? (
           <ActionButton primary icon="arrowRight" onClick={() => onMove("Contacted")}>
@@ -126,9 +147,16 @@ export function LeadDetails({
           </ActionButton>
         )}
       </div>
+      )}
 
       {/* ── Quotations for this lead ── */}
-      <LeadQuotes lead={lead} today={today} />
+      {QUOTATIONS_CONNECTED ? (
+        <LeadQuotes lead={lead} today={today} />
+      ) : (
+        <Section title="Quotations">
+          <p className="text-sm text-navy-400">Quotations for this lead will appear here once the Quotations module is connected.</p>
+        </Section>
+      )}
 
       {/* ── Contact ── */}
       <Section title="Contact">

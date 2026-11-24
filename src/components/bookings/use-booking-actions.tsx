@@ -4,7 +4,7 @@ import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { Booking, BookingPayment, Customer, Quotation } from "@/types/crm";
 import { bookingStore, useBookings } from "@/lib/booking-store";
-import { leadStore, useLeadList } from "@/lib/lead-store";
+import { useLeadData } from "@/lib/lead-store";
 import {
   bookingFromQuote,
   bookingMoney,
@@ -42,7 +42,7 @@ export function useBookingActions() {
   const toast = useToast();
   const { bookings } = useBookings();
   const { customers, getCustomer, openAddForm } = useCustomers();
-  const leads = useLeadList();
+  const { leads, updateLeadStatus } = useLeadData();
 
   /** Moves the booking to its next status (if nothing blocks it). */
   const advance = useCallback(
@@ -199,7 +199,7 @@ export function useBookingActions() {
 
       const samePhone = customers.find((c) => compactPhone(c.phone) === compactPhone(q.recipient.phone));
       const linkLead = (customerId: string) => {
-        if (lead) leadStore.update({ ...lead, customerId, stage: "Won", nextFollowUp: undefined, lostReason: undefined, lastContact: todayIso() });
+        if (lead) void updateLeadStatus(lead, { customerCode: customerId, stage: "Won", nextFollowUp: null, lostReason: null });
       };
       if (samePhone) {
         linkLead(samePhone.id);
@@ -211,7 +211,7 @@ export function useBookingActions() {
           ...splitName(q.recipient.name),
           phone: q.recipient.phone,
           email: q.recipient.email ?? "",
-          agent: q.agent,
+          agent: lead?.agentId ?? q.agent,
           favouriteDestination: q.destination,
           whatsappOptIn: lead?.source === "WhatsApp",
           notes: lead?.notes ?? "",
@@ -222,7 +222,7 @@ export function useBookingActions() {
         },
       });
     },
-    [bookings, customers, getCustomer, leads, openAddForm, router, toast],
+    [bookings, customers, getCustomer, leads, openAddForm, router, toast, updateLeadStatus],
   );
 
   return { advance, cancel, recordPayment, recordRefund, keepAsFee, markSupplierPaid, removePayment, setServiceRef, createFromQuote };

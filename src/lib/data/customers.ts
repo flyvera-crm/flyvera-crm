@@ -2,12 +2,12 @@
 // Server-side only. Every query runs as the signed-in user, so the database's
 // Row Level Security decides which customers each role sees.
 import { cache } from "react";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ContactMethod, Customer, CustomerStatus, CustomerTier, SeatPreference, StoredPassport } from "@/types/crm";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser, type AppRole } from "@/lib/auth";
+import { agentName, getTeam, type AgentOption } from "@/lib/data/team";
 
-export type AgentOption = { id: string; name: string };
+export type { AgentOption };
 
 /** What the signed-in user may do with customers (mirrors the RLS rules in migration 10). */
 export type CustomerAccess = {
@@ -53,7 +53,6 @@ type PassportRow = { id: string; customer_id: string; number_last4: string; expi
 const EDITOR_ROLES: AppRole[] = ["admin", "support_agent", "sales_manager", "sales_agent"];
 const PASSPORT_ROLES: AppRole[] = ["admin", "sales_manager", "sales_agent", "ticketing_agent"];
 const STATS_ROLES: AppRole[] = ["admin", "sales_manager", "sales_agent", "ticketing_agent", "finance_manager"];
-const ASSIGNABLE_ROLES: AppRole[] = ["admin", "sales_manager", "sales_agent"];
 
 export function mapCustomer(
   row: CustomerRow,
@@ -94,55 +93,6 @@ export function mapCustomer(
   };
 }
 
-/** Display names of everyone in the organization, by user id. */
-async function memberNames(supabase: SupabaseClient, organizationId: string, me: { id: string; name: string }) {
-  const { data: members } = await supabase
-    .from("organization_members")
-    .select("user_id, role, status")
-    .eq("organization_id", organizationId);
-  const ids = (members ?? []).map((m) => m.user_id as string);
-  const { data: profiles } = ids.length
-    ? await supabase.from("profiles").select("id, full_name, display_name").in("id", ids)
-    : { data: [] as { id: string; full_name: string; display_name: string | null }[] };
-
-  const names = new Map<string, string>();
-  for (const p of profiles ?? []) {
-    names.set(p.id, p.display_name?.trim() || p.full_name?.trim() || "Unnamed team member");
-  }
-  if (!names.get(me.id) || names.get(me.id) === "Unnamed team member") names.set(me.id, me.name);
-  return { members: (members ?? []) as { user_id: string; role: AppRole; status: string }[], names };
-}
-
-/** Who this user may assign customers to (same rule as private.in_sales_scope). */
-async function assignableAgents(
-  supabase: SupabaseClient,
-  organizationId: string,
-  role: AppRole,
-  myId: string,
-  members: { user_id: string; role: AppRole; status: string }[],
-  names: Map<string, string>,
-): Promise<AgentOption[]> {
-  const candidates = members.filter((m) => m.status === "active" && ASSIGNABLE_ROLES.includes(m.role));
-  let allowed: string[];
-  if (role === "sales_agent") {
-    allowed = [myId];
-  } else if (role === "sales_manager") {
-    const { data: teams } = await supabase
-      .from("team_members")
-      .select("team_id, user_id, is_manager")
-      .eq("organization_id", organizationId);
-    const managed = new Set((teams ?? []).filter((t) => t.user_id === myId && t.is_manager).map((t) => t.team_id));
-    allowed = [myId, ...(teams ?? []).filter((t) => managed.has(t.team_id)).map((t) => t.user_id as string)];
-  } else {
-    allowed = candidates.map((m) => m.user_id);
-  }
-  const allowedSet = new Set(allowed);
-  return candidates
-    .filter((m) => allowedSet.has(m.user_id))
-    .map((m) => ({ id: m.user_id, name: names.get(m.user_id) ?? "Unnamed team member" }))
-    .sort((a, b) => (a.id === myId ? -1 : b.id === myId ? 1 : a.name.localeCompare(b.name)));
-}
-
 const NO_ACCESS: CustomerAccess = {
   canCreate: false,
   canEdit: false,
@@ -180,7 +130,7 @@ export const getCustomerData = cache(async (): Promise<{ customers: Customer[]; 
           .eq("is_primary", true)
           .overrideTypes<PassportRow[], { merge: false }>()
       : Promise.resolve({ data: [] as PassportRow[], error: null }),
-    memberNames(supabase, membership.organizationId, user),
+    getTeam(),
   ]);
 
   if (customersRes.error) throw new Error(`Couldn't load customers: ${customersRes.error.message}`);
@@ -191,7 +141,7 @@ export const getCustomerData = cache(async (): Promise<{ customers: Customer[]; 
 
   const customers = (customersRes.data ?? []).map((row) =>
     mapCustomer(row, {
-      agentName: row.assigned_to ? (team.names.get(row.assigned_to) ?? "Unnamed team member") : "Unassigned",
+      agentName: agentName(team, row.assigned_to),
       stats: stats.get(row.id),
       passport: passports.get(row.id),
       statsHidden,
@@ -199,9 +149,6 @@ export const getCustomerData = cache(async (): Promise<{ customers: Customer[]; 
   );
 
   const canEdit = EDITOR_ROLES.includes(role);
-  const agentOptions = canEdit
-    ? await assignableAgents(supabase, membership.organizationId, role, user.id, team.members, team.names)
-    : [];
 
   return {
     customers,
@@ -209,8 +156,8 @@ export const getCustomerData = cache(async (): Promise<{ customers: Customer[]; 
       canCreate: canEdit,
       canEdit,
       canSeePassports: PASSPORT_ROLES.includes(role),
-      agentOptions,
-      defaultAgentId: agentOptions.some((a) => a.id === user.id) ? user.id : "",
+      agentOptions: canEdit ? team.agentOptions : [],
+      defaultAgentId: canEdit ? team.defaultAgentId : "",
     },
   };
 });

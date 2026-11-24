@@ -6,7 +6,7 @@ import type { Quotation, QuoteDisplayStatus } from "@/types/crm";
 import { QUOTE_STATUS_TONE, DEFAULT_VALIDITY_DAYS } from "@/config/quote-options";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
-import { leadStore, useLeadList } from "@/lib/lead-store";
+import { useLeadData } from "@/lib/lead-store";
 import { quoteStore, useQuotations } from "@/lib/quote-store";
 import { nextQuoteId } from "@/lib/quote-validation";
 import { addDays, todayIso } from "@/lib/dates";
@@ -36,7 +36,7 @@ export function shareText(q: Quotation) {
 export function useQuoteActions() {
   const router = useRouter();
   const toast = useToast();
-  const leads = useLeadList();
+  const { leads, updateLeadStatus } = useLeadData();
   const { quotes } = useQuotations();
 
   const leadFor = useCallback(
@@ -50,7 +50,7 @@ export function useQuoteActions() {
       quoteStore.update({ ...q, status: "Sent", sentAt: date, updated: date }); // ← later: API call
       const lead = leadFor(q);
       const moved = lead && (lead.stage === "New" || lead.stage === "Contacted");
-      if (moved) leadStore.update({ ...lead, stage: "Quoted", lastContact: date });
+      if (moved) void updateLeadStatus(lead, { stage: "Quoted" }); // saved to the database
       toast({
         message: (
           <p>
@@ -60,7 +60,7 @@ export function useQuoteActions() {
         ),
       });
     },
-    [leadFor, toast],
+    [leadFor, toast, updateLeadStatus],
   );
 
   const markAccepted = useCallback(
@@ -69,7 +69,7 @@ export function useQuoteActions() {
       quoteStore.update({ ...q, status: "Accepted", respondedAt: date, updated: date });
       const lead = leadFor(q);
       const won = lead && lead.stage !== "Won";
-      if (won) leadStore.update({ ...lead, stage: "Won", lastContact: date, nextFollowUp: undefined, lostReason: undefined });
+      if (won) void updateLeadStatus(lead, { stage: "Won", lostReason: null, nextFollowUp: null }); // saved to the database
       toast({
         message: (
           <p>
@@ -85,7 +85,7 @@ export function useQuoteActions() {
               : undefined,
       });
     },
-    [leadFor, router, toast],
+    [leadFor, router, toast, updateLeadStatus],
   );
 
   const markDeclined = useCallback(

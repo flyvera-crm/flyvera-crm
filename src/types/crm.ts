@@ -28,7 +28,12 @@ export type Lead = {
   nextFollowUp?: string; // ISO
   notes?: string;
   lostReason?: string;
-  customerId?: string; // set once converted to a customer
+  customerId?: string; // customer code (CU-…), set once converted to a customer
+  // Set for leads loaded from the database:
+  /** Database row id. The readable code (LD-2001) is `id`. */
+  dbId?: string;
+  /** User id of the assigned agent; `agent` holds their display name. */
+  agentId?: string;
 };
 export type FlightStatus = "On time" | "Delayed" | "Boarding" | "Scheduled";
 

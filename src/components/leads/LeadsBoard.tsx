@@ -108,10 +108,10 @@ function LeadCard({
   onDragStart: () => void;
   onDragEnd: () => void;
 }) {
-  const { openLead, moveLead, today, addedIds } = useLeads();
+  const { openLead, moveLead, today, addedIds, canEdit } = useLeads();
   return (
     <article
-      draggable
+      draggable={canEdit}
       onDragStart={(e) => {
         e.dataTransfer.setData(DRAG_TYPE, lead.id);
         e.dataTransfer.effectAllowed = "move";
@@ -119,7 +119,8 @@ function LeadCard({
       }}
       onDragEnd={onDragEnd}
       className={cn(
-        "group relative cursor-grab rounded-xl border bg-white p-3.5 shadow-[0_1px_2px_rgba(11,31,58,0.05)] transition active:cursor-grabbing",
+        "group relative rounded-xl border bg-white p-3.5 shadow-[0_1px_2px_rgba(11,31,58,0.05)] transition",
+        canEdit && "cursor-grab active:cursor-grabbing",
         "hover:border-sky-brand/40 hover:shadow-md",
         lead.priority === "Hot" && lead.stage !== "Won" && lead.stage !== "Lost" ? "border-rose-200" : "border-navy-100",
         lead.stage === "Lost" && "opacity-70",
@@ -180,6 +181,7 @@ function LeadCard({
       )}
 
       {/* Keyboard / touch alternative to drag & drop (sits above the card's click area). */}
+      {canEdit && (
       <label className="relative z-10 mt-3 flex items-center gap-2 border-t border-navy-50 pt-2.5 text-xs text-navy-400">
         <span className="shrink-0">Move to</span>
         <select
@@ -195,6 +197,7 @@ function LeadCard({
           ))}
         </select>
       </label>
+      )}
     </article>
   );
 }
