@@ -7,12 +7,15 @@ import { AddLeadButton } from "@/components/leads/AddLeadButton";
 import { LeadSummary } from "@/components/leads/LeadSummary";
 import { LeadsWorkspace } from "@/components/leads/LeadsWorkspace";
 import { getLeadData } from "@/lib/data/leads";
+import { getCurrentUser } from "@/lib/auth";
+import { ArchivedListButton } from "@/components/archive/ArchiveControls";
 
 export const metadata: Metadata = { title: "Leads" };
 
 export default async function LeadsPage() {
   // Leads themselves are loaded once by the CRM layout (cached per request); here we only need the access check.
-  const { access } = await getLeadData();
+  const [{ access }, user] = await Promise.all([getLeadData(), getCurrentUser()]);
+  const isAdmin = user.membership?.role === "admin";
 
   if (!access.canView) {
     return (
@@ -38,7 +41,12 @@ export default async function LeadsPage() {
         eyebrow="Sales & Clients"
         title="Leads"
         description="Track enquiries from first contact to confirmed booking. Drag cards between stages."
-        actions={<AddLeadButton />}
+        actions={
+          <>
+            {isAdmin && <ArchivedListButton kind="lead" />}
+            <AddLeadButton />
+          </>
+        }
       />
       <div className="space-y-6">
         <LeadSummary />

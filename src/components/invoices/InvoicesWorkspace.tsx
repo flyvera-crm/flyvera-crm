@@ -11,6 +11,8 @@ import { Card } from "@/components/ui/Card";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatCurrency, formatDate, formatMoney } from "@/lib/format";
 import { InvoiceStatusBadge } from "./invoice-ui";
+import { invoicesCsv } from "@/lib/exports";
+import { downloadText } from "@/lib/download";
 
 type Period = "all" | "30" | "month" | "year";
 const PERIODS: { value: Period; label: string }[] = [
@@ -21,7 +23,8 @@ const PERIODS: { value: Period; label: string }[] = [
 ];
 
 /** Invoices page: totals, status tabs, search and date filter (by issue date; drafts by creation date). */
-export function InvoicesWorkspace({ invoices }: { invoices: Invoice[] }) {
+/** `canExport`: admins and Finance (bulk financial data). */
+export function InvoicesWorkspace({ invoices, canExport }: { invoices: Invoice[]; canExport: boolean }) {
   const hydrated = useHydrated();
   const today = hydrated ? todayIso() : null;
   const [tab, setTab] = useState<InvoiceStatus | "All">("All");
@@ -97,6 +100,17 @@ export function InvoicesWorkspace({ invoices }: { invoices: Invoice[] }) {
                 </option>
               ))}
             </select>
+            {canExport && (
+              <button
+                type="button"
+                disabled={!visible.length}
+                onClick={() => downloadText(`flyvera-invoices-${today ?? "export"}.csv`, invoicesCsv(visible))}
+                title="The invoices shown, as a spreadsheet"
+                className="flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl border border-navy-100 bg-white px-3 text-sm font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
+              >
+                <Icon name="document" size={15} /> CSV
+              </button>
+            )}
             <label className="relative block min-w-0 sm:w-72">
               <span className="sr-only">Search invoices</span>
               <Icon name="search" size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-navy-300" />

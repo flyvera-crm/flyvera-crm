@@ -194,6 +194,31 @@ export async function correctPayment(bookingDbId: unknown, paymentDbId: unknown,
 
 // Refunds (request / approve / pay / record directly) live in src/lib/actions/refunds.ts (migration 18).
 
+/** Links a booked service to a supplier from the directory (or removes the link). */
+export async function setServiceSupplier(bookingDbId: unknown, serviceDbId: unknown, supplierId: unknown): Promise<BookingResult> {
+  if (typeof serviceDbId !== "string" || !UUID_RE.test(serviceDbId)) return { ok: false, message: "That service couldn't be found." };
+  if (supplierId !== null && !(typeof supplierId === "string" && UUID_RE.test(supplierId))) return { ok: false, message: "Choose the supplier again." };
+  const ctx = await withBooking(bookingDbId);
+  if ("message" in ctx) return { ok: false, message: ctx.message };
+  const { supabase, orgId, booking } = ctx;
+  if (booking.status === "Cancelled") return { ok: false, message: "Suppliers can't be changed on a cancelled booking." };
+  const service = booking.services.find((s) => s.dbId === serviceDbId);
+  if (!service) return { ok: false, message: "That service isn't on this booking." };
+  if ((service.supplierId ?? null) === supplierId) return { ok: true, booking };
+
+  let name = "";
+  if (supplierId) {
+    const { data: supplier } = await supabase.from("suppliers").select("name, active").eq("id", supplierId).maybeSingle();
+    if (!supplier) return { ok: false, message: "That supplier couldn't be found." };
+    if (!supplier.active) return { ok: false, message: `${supplier.name} is deactivated. Choose an active supplier.` };
+    name = supplier.name;
+  }
+  const { data, error } = await supabase.from("booking_services").update({ supplier_id: supplierId }).eq("id", serviceDbId).select("id").maybeSingle();
+  if (error || !data) return { ok: false, message: friendly(error, "change this supplier") };
+  await addEvent(supabase, orgId, booking, supplierId ? `${service.type} supplier set to ${name}` : `${service.type} supplier removed`);
+  return done(supabase, booking.dbId!);
+}
+
 /** Cancelled booking: keep what was paid as a cancellation fee. */
 export async function keepAsFee(bookingDbId: unknown): Promise<BookingResult> {
   const ctx = await withBooking(bookingDbId);
@@ -230,6 +255,7 @@ export async function markSupplierPaid(bookingDbId: unknown, serviceDbId: unknow
     organization_id: orgId,
     booking_id: booking.dbId,
     booking_service_id: serviceDbId,
+    supplier_id: service.supplierId ?? null,
     kind: paid ? "Payment" : "Refund",
     amount: service.cost,
     method: "Bank transfer",

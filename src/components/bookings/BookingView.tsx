@@ -7,6 +7,7 @@ import type { BookingTicketing } from "@/types/ticketing";
 import { TicketingPanel } from "@/components/tickets/TicketingPanel";
 import type { Invoice } from "@/types/invoices";
 import { InvoicesCard } from "@/components/invoices/InvoicesCard";
+import type { Supplier } from "@/lib/supplier-rules";
 import { useBookingData, useBookings } from "@/lib/booking-store";
 import { BOOKING_FLOW, bookingMoney, daysBetween, isRefund, nextStep, paymentState, refundableAmount, refundState } from "@/lib/booking-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
@@ -28,11 +29,14 @@ export function BookingView({
   id,
   ticketing,
   invoices,
+  suppliers,
 }: {
   id: string;
   ticketing: BookingTicketing | null;
   /** This booking's invoices; null for roles that don't see invoices. */
   invoices: Invoice[] | null;
+  /** The supplier directory; null for roles that can't see suppliers. */
+  suppliers: Supplier[] | null;
 }) {
   const { bookings, today } = useBookings();
   const { access } = useBookingData();
@@ -241,6 +245,29 @@ export function BookingView({
                         )}
                       </div>
                     </div>
+                    <div className="space-y-2">
+                    {suppliers && (
+                      <label className="block">
+                        <span className="mb-1 block text-xs text-navy-400">Supplier</span>
+                        <select
+                          value={s.supplierId ?? ""}
+                          disabled={busy || b.status === "Cancelled" || !access.canEditServices}
+                          onChange={(e) => run(() => actions.setServiceSupplier(b, s.id, e.target.value || null))}
+                          aria-label={`Supplier for ${s.type}: ${s.description}`}
+                          className={inputClass(false, "h-10")}
+                        >
+                          <option value="">{access.canEditServices ? "Choose supplier…" : "—"}</option>
+                          {suppliers
+                            .filter((x) => x.active || x.dbId === s.supplierId)
+                            .map((x) => (
+                              <option key={x.dbId} value={x.dbId}>
+                                {x.name}
+                                {x.active ? "" : " (inactive)"}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                    )}
                     <label className="block">
                       <span className="mb-1 block text-xs text-navy-400">Supplier reference</span>
                       <input
@@ -256,6 +283,7 @@ export function BookingView({
                         className={inputClass(false, cn("h-10 font-mono uppercase placeholder:font-sans placeholder:normal-case", s.ref && "border-emerald-200 bg-emerald-50/40"))}
                       />
                     </label>
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -41,6 +41,7 @@ export const navSections: NavSection[] = [
       { label: "Tickets", href: "/tickets", icon: "ticket", description: "Issued e-tickets, reissues, refunds and voids." },
       { label: "Payments", href: "/payments", icon: "card", description: "Receipts, balances, refunds and supplier payments." },
       { label: "Invoices", href: "/invoices", icon: "wallet", description: "Numbered customer invoices and what's still to collect." },
+      { label: "Suppliers", href: "/suppliers", icon: "globe", description: "Airlines, hotels and partners you book with." },
     ],
   },
   {

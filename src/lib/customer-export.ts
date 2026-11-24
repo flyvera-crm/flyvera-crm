@@ -1,16 +1,10 @@
 // Customer list → CSV (pure, unit-tested). Admin-only in the UI: it's a bulk copy of contact details.
 // Deliberately leaves out passports, dates of birth and notes.
 import type { Customer } from "@/types/crm";
-import { toCsv } from "@/lib/report-metrics";
+import { safeCell, toCsv } from "@/lib/report-metrics";
 
-/**
- * Spreadsheet apps run cells that start with = + - @ as formulas ("CSV injection"), and turn
- * "+971…" phone numbers into plain numbers. A leading apostrophe keeps such cells as text.
- */
-export function safeCell(value: string | number | null | undefined) {
-  if (typeof value !== "string") return value;
-  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
-}
+// The formula protection lives in the shared CSV builder (toCsv) now; re-exported for existing callers.
+export { safeCell };
 
 export const CUSTOMER_CSV_HEADER = [
   "Customer",
@@ -46,7 +40,7 @@ export function customersCsv(customers: Customer[]) {
         c.statsHidden ? "" : (c.lastTrip ?? ""),
         c.agent,
         c.joined,
-      ].map(safeCell),
+      ],
     );
   return toCsv([CUSTOMER_CSV_HEADER, ...rows]);
 }

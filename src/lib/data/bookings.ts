@@ -37,7 +37,8 @@ export const BOOKING_COLUMNS =
   "status, deposit_due_on, balance_due_on, agent_id, cancel_reason, refund_decision, created_at, updated_at, " +
   "customer:customers!bookings_customer_id_organization_id_fkey(code, first_name, last_name, phone, email), " +
   "quotation:quotations!bookings_quotation_id_organization_id_fkey(code), " +
-  "services:booking_services!booking_services_booking_id_organization_id_fkey(id, position, service_type, description, quantity, unit_price, cost, supplier_ref), " +
+  "services:booking_services!booking_services_booking_id_organization_id_fkey(id, position, service_type, description, quantity, unit_price, cost, supplier_ref, " +
+  "supplier:suppliers!booking_services_supplier_id_organization_id_fkey(id, name)), " +
   "events:booking_events!booking_events_booking_id_organization_id_fkey(body, occurred_at), " +
   "payments:payments!payments_booking_id_organization_id_fkey(id, sequence_no, amount, method, received_on, note, reference, created_at, updated_at), " +
   "refunds:refunds!refunds_booking_id_organization_id_fkey(id, sequence_no, reference_number, amount, requested_amount, method, status, paid_on, note, " +
@@ -81,6 +82,7 @@ export type BookingRow = {
     unit_price: number | string;
     cost: number | string;
     supplier_ref: string | null;
+    supplier: { id: string; name: string } | { id: string; name: string }[] | null;
   }[] | null;
   events: { body: string; occurred_at: string }[] | null;
   payments: {
@@ -216,6 +218,8 @@ export function mapBooking(
         unitPrice: Number(s.unit_price),
         cost,
         ref: s.supplier_ref ?? undefined,
+        supplierId: one(s.supplier)?.id,
+        supplierName: one(s.supplier)?.name,
         supplierPaidOn: paid && cost > 0 && paid.net >= cost - 0.005 ? paid.lastPaidOn : undefined,
       };
     }),

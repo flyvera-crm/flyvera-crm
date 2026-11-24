@@ -5,6 +5,7 @@ import { AddCustomerButton } from "@/components/customers/AddCustomerButton";
 import { CustomerSummary } from "@/components/customers/CustomerSummary";
 import { CustomersTable } from "@/components/customers/CustomersTable";
 import { ExportCustomersButton } from "@/components/customers/ExportCustomersButton";
+import { ArchivedListButton } from "@/components/archive/ArchiveControls";
 import { getCurrentUser } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Customers" };
@@ -20,6 +21,7 @@ export default async function CustomersPage() {
         description="Traveller profiles, tiers and trip history."
         actions={
           <>
+            {canExport && <ArchivedListButton kind="customer" />}
             {canExport && <ExportCustomersButton />}
             <AddCustomerButton />
           </>

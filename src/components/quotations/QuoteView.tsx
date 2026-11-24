@@ -17,6 +17,7 @@ import { QuoteMissing } from "./QuoteEditor";
 import { QuoteStatusBadge, shareText, useQuoteActions } from "./quote-actions";
 import { useBookingActions } from "@/components/bookings/use-booking-actions";
 import { useBookingData, useBookings } from "@/lib/booking-store";
+import { ArchiveButton } from "@/components/archive/ArchiveControls";
 
 // Bookings come from the database (shared list), so accepted quotations link to their real booking.
 const BOOKINGS_CONNECTED = true;
@@ -138,6 +139,7 @@ export function QuoteView({ id }: { id: string }) {
             <ToolbarButton icon="chart" onClick={() => window.print()}>
               Print / PDF
             </ToolbarButton>
+            {canEdit && quote.dbId && <ArchiveButton kind="quotation" dbId={quote.dbId} name={quote.id} className="py-2" />}
           </div>
         </div>
         {status === "Expired" && (

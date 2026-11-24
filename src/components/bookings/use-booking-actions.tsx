@@ -186,6 +186,18 @@ export function useBookingActions() {
     [apply],
   );
 
+  /** Links a service to a supplier from the directory (null removes the link). */
+  const setServiceSupplier = useCallback(
+    async (b: Booking, serviceId: string, supplierId: string | null) => {
+      const service = b.services.find((s) => s.id === serviceId);
+      if (!service?.dbId || (service.supplierId ?? null) === supplierId) return true;
+      const saved = apply(await server.setServiceSupplier(b.dbId, service.dbId, supplierId));
+      if (saved) toast({ message: <p>{supplierId ? "Supplier linked." : "Supplier removed."}</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
   /**
    * Accepted quotation → booking. A quote for a lead needs a customer first:
    * we link an existing customer with the same phone, or open the customer form pre-filled.
@@ -264,5 +276,10 @@ export function useBookingActions() {
     rejectRefund,
     withdrawRefund,
     payRefund,
-    keepAsFee, markSupplierPaid, setServiceRef, createFromQuote };
+    keepAsFee,
+    markSupplierPaid,
+    setServiceRef,
+    setServiceSupplier,
+    createFromQuote,
+  };
 }

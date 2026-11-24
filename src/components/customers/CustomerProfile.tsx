@@ -19,6 +19,7 @@ import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
 import { useBookings } from "@/lib/booking-store";
 import { bookingMoney } from "@/lib/booking-rules";
 import { BookingStatusBadge, bookingTotalLabel, PaymentBadge, TimingChip } from "@/components/bookings/booking-ui";
+import { ArchiveButton } from "@/components/archive/ArchiveControls";
 
 const tierTone: Record<CustomerTier, BadgeTone> = { Platinum: "premium", Gold: "gold", Silver: "neutral", Standard: "info" };
 const statusTone: Record<CustomerStatus, BadgeTone> = { Active: "success", Travelling: "info", Inactive: "neutral" };
@@ -141,6 +142,7 @@ function ProfileHeader({ customer: c, isNew, onEdit }: { customer: Customer; isN
               <Icon name="settings" size={16} /> Edit profile
             </button>
           )}
+          {onEdit && c.dbId && <ArchiveButton kind="customer" dbId={c.dbId} name={c.name} />}
         </div>
       </div>
     </section>

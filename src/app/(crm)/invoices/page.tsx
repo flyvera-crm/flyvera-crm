@@ -20,7 +20,7 @@ export default async function InvoicesPage() {
             : "Numbered customer invoices — read and print. Finance creates and issues them."
         }
       />
-      <InvoicesWorkspace invoices={invoices} />
+      <InvoicesWorkspace invoices={invoices} canExport={access.canManage} />
     </>
   );
 }

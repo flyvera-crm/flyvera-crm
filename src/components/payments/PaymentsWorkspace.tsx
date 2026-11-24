@@ -25,6 +25,8 @@ import { RefundRequestsList } from "@/components/bookings/RefundRequestsList";
 import type { BookingAccess } from "@/lib/data/bookings";
 import { useBookingActions } from "@/components/bookings/use-booking-actions";
 import { useAgencySettings } from "@/lib/settings-store";
+import { filterBySupplier, payableSuppliers, paymentsCsv } from "@/lib/exports";
+import { downloadText } from "@/lib/download";
 
 type Tab = "received" | "due" | "refunds" | "suppliers";
 
@@ -110,7 +112,7 @@ export function PaymentsWorkspace() {
           ))}
         </div>
 
-        {tab === "received" && <ReceivedTab entries={entries} />}
+        {tab === "received" && <ReceivedTab entries={entries} canExport={canRecord} today={today} />}
         {tab === "due" && (
           <DueTab
             dues={dues}
@@ -256,7 +258,8 @@ function Empty({ icon, title, text }: { icon: IconName; title: string; text: str
   );
 }
 
-function ReceivedTab({ entries }: { entries: ReturnType<typeof ledgerEntries> }) {
+/** `canExport`: admins and Finance (bulk financial data). */
+function ReceivedTab({ entries, canExport, today }: { entries: ReturnType<typeof ledgerEntries>; canExport: boolean; today: string | null }) {
   const [query, setQuery] = useState("");
   const [method, setMethod] = useState<PaymentMethod | "All">("All");
   const [kind, setKind] = useState<"all" | "payment" | "refund">("all");
@@ -285,6 +288,17 @@ function ReceivedTab({ entries }: { entries: ReturnType<typeof ledgerEntries> })
         <div className="flex gap-2">
           <SmallSelect label="Type" value={kind} onChange={(v) => setKind(v as typeof kind)} options={[["all", "Payments & refunds"], ["payment", "Payments only"], ["refund", "Refunds only"]]} />
           <SmallSelect label="Method" value={method} onChange={(v) => setMethod(v as PaymentMethod | "All")} options={[["All", "All methods"], ...PAYMENT_METHODS.map((m) => [m, m] as [string, string])]} />
+          {canExport && (
+            <button
+              type="button"
+              disabled={!rows.length}
+              onClick={() => downloadText(`flyvera-payments-${today ?? "export"}.csv`, paymentsCsv(rows))}
+              title="The payments and refunds shown, as a spreadsheet"
+              className="flex shrink-0 items-center gap-1.5 rounded-xl border border-navy-100 bg-white px-3 text-sm font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
+            >
+              <Icon name="document" size={15} /> CSV
+            </button>
+          )}
         </div>
       </div>
       {rows.length === 0 ? (
@@ -523,20 +537,33 @@ function SuppliersTab({
   onPaid?: (b: Booking, serviceId: string) => void;
 }) {
   const supplierDays = useAgencySettings().defaults.supplierDaysBeforeDeparture;
+  const [supplier, setSupplier] = useState("");
   if (!payables.length) return <Empty icon="check" title="All suppliers paid" text="There are no unpaid services on confirmed bookings." />;
-  const total = payables.reduce((s, p) => s + p.service.cost, 0);
+  const options = payableSuppliers(payables);
+  const shown = filterBySupplier(payables, supplier);
+  const total = shown.reduce((s, p) => s + p.service.cost, 0);
   return (
     <>
-      <p className="border-b border-navy-50 px-6 py-3 text-sm text-navy-500">
-        Pay suppliers at least {supplierDays} days before departure. Costs come from each booking&apos;s services.
-      </p>
+      <div className="flex flex-col gap-2 border-b border-navy-50 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-navy-500">Pay suppliers at least {supplierDays} days before departure. Costs come from each booking&apos;s services.</p>
+        <SmallSelect
+          label="Supplier"
+          value={supplier}
+          onChange={setSupplier}
+          options={[["", "All suppliers"], ...options.map((o) => [o.id, o.name] as [string, string]), ["none", "No supplier linked"]]}
+        />
+      </div>
+      {shown.length === 0 && <Empty icon="check" title="Nothing to pay here" text="No unpaid services for this supplier." />}
       <ul className="divide-y divide-navy-50">
-        {payables.map(({ booking: b, service: s, dueDate }) => {
+        {shown.map(({ booking: b, service: s, dueDate }) => {
           const late = !!today && dueDate < today;
           return (
             <li key={`${b.id}-${s.id}`} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
               <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-wider text-sky-brand-dark">{s.type}</p>
+                <p className="text-xs font-semibold uppercase tracking-wider text-sky-brand-dark">
+                  {s.type}
+                  {s.supplierName ? <span className="ml-1.5 normal-case tracking-normal text-navy-500">· {s.supplierName}</span> : null}
+                </p>
                 <p className="text-sm font-medium text-navy-900">{s.description}</p>
                 <p className="text-xs text-navy-400">
                   <Link href={`/bookings/${b.id}`} className="font-mono hover:text-sky-brand-dark">

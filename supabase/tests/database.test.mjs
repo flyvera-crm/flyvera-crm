@@ -58,9 +58,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 20 migrations in order on an empty database", () => {
+  it("applies all 21 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 20);
+    assert.equal(files.length, 21);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -1326,6 +1326,7 @@ describe("19 · Dashboard data sources", () => {
     let all, sara;
     await asOwner(db, async (q) => {
       all = { segments: await count(q, SOURCES.segments), events: await count(q, SOURCES.events), leadActivity: await count(q, SOURCES.leadActivity) };
+      all.eventsWithoutMoney = await count(q, "select 1 from booking_events where not mentions_money");
       const visible = bookingsVisibleTo("Sara K.").map((b) => ids[b.id] ?? null);
       const codes = bookingsVisibleTo("Sara K.").map((b) => b.id);
       sara = {
@@ -1342,7 +1343,11 @@ describe("19 · Dashboard data sources", () => {
     assert.deepEqual({ segments: saraSees.segments, events: saraSees.events, leadActivity: saraSees.leadActivity }, sara, "sales agent: only her customers' bookings and her leads");
 
     const samSees = await countAll(USERS.sam.id);
-    assert.deepEqual({ segments: samSees.segments, events: samSees.events, leadActivity: samSees.leadActivity }, all, "support: flight times, timelines and leads");
+    assert.deepEqual(
+      { segments: samSees.segments, events: samSees.events, leadActivity: samSees.leadActivity },
+      { segments: all.segments, events: all.eventsWithoutMoney, leadActivity: all.leadActivity },
+      "support: flight times, timeline lines without amounts (migration 21), and leads",
+    );
     assert.equal(samSees.payments, 0, "support: no payment amounts");
 
     const leoSees = await countAll(USERS.leo.id);
@@ -1351,6 +1356,7 @@ describe("19 · Dashboard data sources", () => {
 
     const noraSees = await countAll(USERS.nora.id);
     assert.deepEqual({ segments: noraSees.segments, events: noraSees.events, leadActivity: noraSees.leadActivity }, { segments: 0, events: 0, leadActivity: 0 }, "another agency: nothing");
+    assert.ok(all.eventsWithoutMoney < all.events, "the seed has timeline lines with amounts");
   });
 });
 
@@ -1501,5 +1507,118 @@ describe("20 · Agency settings (migration 20)", () => {
       const theirs = await q("update profiles set display_name = 'Hacked' where id = $1 returning id", [USERS.daniel.id]);
       assert.equal(theirs.length, 0, "someone else's profile isn't updated");
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("21 · Gap fills (migration 21)", () => {
+  const switchTo = async (q, user) => {
+    await q("set local role authenticated");
+    await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: user.id })]);
+  };
+  const leadId = async (q, code) => (await q("select id from leads where code = $1 and organization_id = $2", [code, ORG]))[0].id;
+
+  it("won't archive a customer with active bookings or a quotation that became a booking", async () => {
+    await asOwner(db, async (q) => {
+      const [busy] = await q(
+        "select c.id, c.assigned_to from customers c where c.organization_id = $1 and exists (select 1 from bookings b where b.customer_id = c.id and b.status not in ('Completed', 'Cancelled')) order by c.code limit 1",
+        [ORG]);
+      const [booked] = await q("select q.id from quotations q join bookings b on b.quotation_id = q.id where q.organization_id = $1 limit 1", [ORG]);
+      await switchTo(q, USERS.aisha);
+      await q.fails("select archive_customer($1)", [busy.id], /has active bookings \(FV-/);
+      await q.fails("select archive_quotation($1)", [booked.id], /became booking FV-/);
+    });
+  });
+
+  it("archives other records for whoever may edit them; only admins see and restore them", async () => {
+    await asOwner(db, async (q) => {
+      const [free] = await q(
+        "select c.id from customers c where c.organization_id = $1 and c.assigned_to = $2 and not exists (select 1 from bookings b where b.customer_id = c.id and b.status not in ('Completed', 'Cancelled')) order by c.code limit 1",
+        [ORG, USERS.sara.id]);
+      assert.ok(free, "Sara has a customer without active bookings");
+      await switchTo(q, USERS.leo);
+      await q.fails("select archive_customer($1)", [free.id], /cannot archive this customer/);
+      await switchTo(q, USERS.sara);
+      await q("select archive_customer($1)", [free.id]);
+      assert.equal(await count(q, "select 1 from customers where id = $1", [free.id]), 0, "archived: gone from Sara's list");
+      await q("update customers set deleted_at = null where id = $1", [free.id]);
+      await switchTo(q, USERS.aisha);
+      assert.equal(await count(q, "select 1 from customers where id = $1 and deleted_at is not null", [free.id]), 1, "a non-admin can't restore");
+      await q("update customers set deleted_at = null where id = $1", [free.id]);
+      await switchTo(q, USERS.sara);
+      assert.equal(await count(q, "select 1 from customers where id = $1", [free.id]), 1, "restored by the admin");
+    });
+  });
+
+  it("records every lead stage change automatically", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const id = await leadId(q, "LD-2061");
+      await q("update leads set stage = 'Contacted', notes = 'Called back' where id = $1", [id]);
+      await q("update leads set notes = 'Only a note' where id = $1", [id]);
+      await q("update leads set stage = 'Lost', lost_reason = 'Chose another agency' where id = $1", [id]);
+      const rows = await q(
+        "select from_stage, to_stage, body, created_by from lead_activities where lead_id = $1 and activity_type = 'Stage change'",
+        [id]);
+      // Both changes happen in one transaction (same timestamp), so put them in stage order here.
+      rows.sort((a, b) => (a.from_stage === "New" ? -1 : b.from_stage === "New" ? 1 : 0));
+      assert.deepEqual(rows.map((r) => [r.from_stage, r.to_stage, r.body]), [["New", "Contacted", null], ["Contacted", "Lost", "Chose another agency"]]);
+      assert.ok(rows.every((r) => r.created_by === USERS.sara.id));
+    });
+  });
+
+  it("lets people log activity on leads they can see; entries can't be changed", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const mine = await leadId(q, "LD-2061");
+      const [{ id }] = await q("insert into lead_activities (organization_id, lead_id, activity_type, body) values ($1, $2, 'Call', 'Discussed villas') returning id", [ORG, mine]);
+      await q.fails("update lead_activities set body = 'Changed' where id = $1", [id], /permission denied/);
+      await q.fails("delete from lead_activities where id = $1", [id], /permission denied/);
+    });
+    await asOwner(db, async (q) => {
+      const daniels = await leadId(q, "LD-2060");
+      await switchTo(q, USERS.sara);
+      await q.fails("insert into lead_activities (organization_id, lead_id, activity_type, body) values ($1, $2, 'Call', 'Not my lead')", [ORG, daniels], /row-level security/);
+    });
+  });
+
+  it("keeps timeline lines that mention money from roles that can't see money", async () => {
+    const samples = {
+      "Payment of $500 recorded": true,
+      "Refund RF-10477-1 of USD 120.00 requested (Cancellation)": true,
+      "Invoice INV-2026-0001 issued (USD 1250.00, due 2026-12-01)": true,
+      "Booking confirmed": false,
+      "Ticket 157-2345678901 issued for Amelia Clarke": false,
+      "FV-10481 moved to Ticketed": false,
+    };
+    await asOwner(db, async (q) => {
+      const b = ids["FV-10481"];
+      const inserted = [];
+      for (const body of Object.keys(samples)) {
+        inserted.push((await q("insert into booking_events (organization_id, booking_id, body) values ($1, $2, $3) returning id", [ORG, b, body]))[0].id);
+      }
+      const rows = await q("select body, mentions_money from booking_events where id = any($1)", [inserted]);
+      assert.deepEqual(Object.fromEntries(rows.map((r) => [r.body, r.mentions_money])), samples, "same rule as the app");
+      const seen = async (user) => {
+        await switchTo(q, user);
+        const n = await count(q, "select 1 from booking_events where id = any($1)", [inserted]);
+        await q("reset role");
+        return n;
+      };
+      assert.equal(await seen(USERS.sam), 3, "support: only the lines without money");
+      assert.equal(await seen(USERS.fiona), 6, "finance: everything");
+      assert.equal(await seen(USERS.leo), 6, "ticketing: everything");
+    });
+  });
+
+  it("lets ticketing and finance manage suppliers; sales read them; support doesn't see them", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const [{ id }] = await q("insert into suppliers (organization_id, name, supplier_type, payment_terms_days) values ($1, 'Test Hotels Ltd', 'Hotel', 30) returning id", [ORG]);
+      await q("update suppliers set active = false where id = $1", [id]);
+      assert.equal((await q("delete from suppliers where id = $1 returning id", [id])).length, 0, "only admins delete");
+    });
+    await asUser(db, USERS.sara.id, async (q) => {
+      assert.ok((await count(q, "select 1 from suppliers")) > 0);
+      await q.fails("insert into suppliers (organization_id, name, supplier_type) values ($1, 'Sales Supplier', 'Other')", [ORG], /row-level security/);
+    });
+    await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from suppliers"), 0));
   });
 });

@@ -69,6 +69,9 @@ export type BookingPayment = {
 export type BookingService = QuoteItem & {
   ref?: string; // airline PNR, hotel confirmation number, etc.
   supplierPaidOn?: string; // ISO date the agency paid the supplier for this service
+  /** The supplier from the directory (database bookings; absent for roles that can't see suppliers). */
+  supplierId?: string;
+  supplierName?: string;
 };
 
 export type BookingEvent = { date: string; text: string };

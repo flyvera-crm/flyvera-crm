@@ -11,6 +11,8 @@ import { FollowUpChip, PriorityBadge, SourceLabel, StageBadge } from "./lead-ui"
 import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
+import { ArchiveButton } from "@/components/archive/ArchiveControls";
+import { LeadActivity } from "./LeadActivity";
 
 // Quotations come from the database (shared list), so the panel shows this lead's real quotations.
 const QUOTATIONS_CONNECTED = true;
@@ -145,6 +147,7 @@ export function LeadDetails({
             Mark as lost
           </ActionButton>
         )}
+        {lead.dbId && <ArchiveButton kind="lead" dbId={lead.dbId} name={lead.name} className="sm:col-span-2" />}
       </div>
       )}
 
@@ -210,6 +213,13 @@ export function LeadDetails({
           <Item label="Next follow-up">{lead.nextFollowUp ? formatDate(lead.nextFollowUp) : <Muted>Not set</Muted>}</Item>
         </dl>
       </Section>
+
+      {/* ── Activity log (calls, messages, meetings, notes, stage changes) ── */}
+      {lead.dbId && (
+        <Section title="Activity">
+          <LeadActivity key={lead.dbId} leadDbId={lead.dbId} today={today} />
+        </Section>
+      )}
 
       {lead.notes && (
         <Section title="Notes">
