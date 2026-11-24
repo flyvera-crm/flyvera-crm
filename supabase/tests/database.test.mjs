@@ -57,9 +57,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 16 migrations in order on an empty database", () => {
+  it("applies all 17 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 16);
+    assert.equal(files.length, 17);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -227,7 +227,7 @@ describe("3 · Relationships & data integrity", () => {
   it("freezes issued invoices", async () => {
     await asUser(db, USERS.fiona.id, async (q) => {
       const [inv] = await q("select id from invoices where number = 'INV-2026-0001'");
-      await q.fails("update invoice_lines set unit_price = 1 where invoice_id = $1", [inv.id], /issued invoice/);
+      await q.fails("update invoice_lines set unit_price = 1 where invoice_id = $1", [inv.id], /issued invoice|permission denied/);
       await q.fails("update invoices set subtotal = 1 where id = $1", [inv.id], /Issued invoices cannot be changed/);
     });
   });
@@ -920,5 +920,120 @@ describe("15 · Ticketing integrity (migration 16)", () => {
         await q.fails("select change_ticket_status($1, 'Voided', 'Not allowed here')", [t.id], /Only Ticketing or an admin/);
       });
     }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("16 · Invoices (migration 17)", () => {
+  /** A booking that isn't cancelled, has payments and has no invoice yet. */
+  const UNINVOICED =
+    "select b.id from bookings b where b.organization_id = $1 and b.status <> 'Cancelled' " +
+    "and exists (select 1 from payments p where p.booking_id = b.id) " +
+    "and not exists (select 1 from invoices i where i.booking_id = b.id) order by b.code limit 1";
+  const bookingId = async (q) => (await q(UNINVOICED, [ORG]))[0].id;
+  const asFiona = async (q) => {
+    await q("set local role authenticated");
+    await q("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: USERS.fiona.id })]);
+  };
+
+  it("creates an unnumbered draft that mirrors the booking, with an optional service fee", async () => {
+    await asOwner(db, async (q) => {
+      const b = await bookingId(q);
+      await asFiona(q);
+      const [before] = await q("select total from booking_financials where booking_id = $1", [b]);
+      const [{ id }] = await q("select create_invoice($1, 50, current_date + 14, 'Thank you!') as id", [b]);
+      const [inv] = await q("select number, status, subtotal, total, notes from invoices where id = $1", [id]);
+      assert.equal(inv.number, null);
+      assert.equal(inv.status, "Draft");
+      assert.equal(inv.notes, "Thank you!");
+      // The fee became a booking service, so booking and invoice totals match.
+      const [after] = await q("select total from booking_financials where booking_id = $1", [b]);
+      assert.equal(Number(after.total), Number(before.total) + 50);
+      assert.equal(Number(inv.total), Number(after.total));
+      const [fee] = await q("select item_type, unit_price from invoice_lines where invoice_id = $1 and item_type = 'Service fee'", [id]);
+      assert.equal(Number(fee.unit_price), 50);
+      await q.fails("select create_invoice($1, 0, null, null)", [b], /already has an invoice/);
+    });
+  });
+
+  it("numbers an invoice only when it's issued, freezes it, snapshots the customer and links payments", async () => {
+    await asOwner(db, async (q) => {
+      const b = await bookingId(q);
+      await asFiona(q);
+      const [{ id }] = await q("select create_invoice($1, 0, null, null) as id", [b]);
+      await q.fails("update invoices set status = 'Issued' where id = $1", [id], /Use Issue or Void/);
+      await q.fails("update invoices set discount = 1 where id = $1", [id], /Draft amounts come from the booking/);
+      await q.fails("insert into invoice_lines (organization_id, invoice_id, description, quantity, unit_price) values ($1, $2, 'x', 1, 1)", [ORG, id], /permission denied/);
+      assert.equal(N(await q("update invoices set notes = 'Pay by bank transfer' where id = $1 returning id", [id])), 1);
+
+      const [{ number }] = await q("select issue_invoice($1, current_date, current_date + 10) as number", [id]);
+      // The seed's three invoices already used 0001–0003 for 2026; the year follows the issue date.
+      assert.match(number, /^INV-\d{4}-\d{4}$/);
+      const [inv] = await q("select status, number, bill_to, passengers, issued_by from invoices where id = $1", [id]);
+      assert.equal(inv.status, "Issued");
+      assert.equal(inv.issued_by, USERS.fiona.id);
+      assert.ok(inv.bill_to.name && inv.bill_to.code);
+      assert.ok(Array.isArray(inv.passengers) && inv.passengers.length > 0);
+      const [{ linked, all }] = await q(
+        "select count(*) filter (where invoice_id = $2)::int as linked, count(*)::int as all from payments where booking_id = $1", [b, id]);
+      assert.equal(linked, all);
+      await q.fails("update invoices set notes = 'changed' where id = $1", [id], /can't be changed/);
+      await q.fails("select issue_invoice($1, current_date, current_date)", [id], /already been issued/);
+      // (lines written in one transaction share a timestamp, so look for the line rather than "the newest")
+      assert.equal(await count(q, "select 1 from booking_events where booking_id = $1 and body like $2", [b, `Invoice ${number} issued%`]), 1);
+    });
+  });
+
+  it("voids only with a reason (logged), then allows a new invoice that takes over the payments", async () => {
+    await asOwner(db, async (q) => {
+      const b = await bookingId(q);
+      await asFiona(q);
+      const [{ id }] = await q("select create_invoice($1, 0, null, null) as id", [b]);
+      await q("select issue_invoice($1, current_date, current_date + 10)", [id]);
+      await q.fails("select void_invoice($1, '')", [id], /reason/);
+      await q("select void_invoice($1, 'Wrong billing address')", [id]);
+      await q.fails("select void_invoice($1, 'Again please')", [id], /already void/);
+      await q.fails("update invoices set status = 'Issued' where id = $1", [id], /Use Issue or Void|can't be changed/);
+
+      const [{ id: second }] = await q("select create_invoice($1, 0, null, null) as id", [b]);
+      await q("select issue_invoice($1, current_date, current_date + 10)", [second]);
+      const [{ moved }] = await q("select count(*)::int as moved from payments where booking_id = $1 and invoice_id = $2", [b, second]);
+      assert.ok(moved > 0);
+
+      await q("reset role");
+      const [log] = await q(
+        "select old_data->>'status' old_status, new_data->>'status' new_status, context->>'reason' reason, actor_id from audit_logs where table_name = 'invoices' and record_id = $1 order by id desc limit 1",
+        [id]);
+      assert.deepEqual(log, { old_status: "Issued", new_status: "Void", reason: "Wrong billing address", actor_id: USERS.fiona.id });
+      assert.ok(await count(q, "select 1 from audit_logs where table_name = 'invoice_lines' and actor_id = $1", [USERS.fiona.id]) > 0);
+    });
+  });
+
+  it("keeps invoices to Finance and admins (others can read where they see the money)", async () => {
+    const [b] = (await db.query(UNINVOICED, [ORG])).rows;
+    const [inv] = (await db.query("select id from invoices where number = 'INV-2026-0002'")).rows;
+    for (const user of [USERS.sara, USERS.leo, USERS.sam, USERS.nora]) {
+      await asUser(db, user.id, async (q) => {
+        await q.fails("select create_invoice($1, 0, null, null)", [b.id], /Only Finance or an admin/);
+        await q.fails("select issue_invoice($1, current_date, current_date)", [inv.id], /Only Finance or an admin/);
+        await q.fails("select void_invoice($1, 'Not allowed here')", [inv.id], /Only Finance or an admin/);
+      });
+    }
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const [{ id }] = await q("select create_invoice($1, 0, null, null) as id", [b.id]);
+      assert.ok(id);
+    });
+    await asUser(db, USERS.leo.id, async (q) => assert.equal(await count(q, "select 1 from invoices"), 3));
+    await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from invoices"), 0));
+  });
+
+  it("refuses cancelled bookings and past due dates", async () => {
+    await asUser(db, USERS.fiona.id, async (q) => {
+      const [cancelled] = await q("select id from bookings where status = 'Cancelled' and organization_id = $1 limit 1", [ORG]);
+      await q.fails("select create_invoice($1, 0, null, null)", [cancelled.id], /Cancelled bookings can't be invoiced/);
+      const [b] = await q(UNINVOICED, [ORG]);
+      await q.fails("select create_invoice($1, 0, current_date - 1, null)", [b.id], /due date can't be in the past/);
+      await q.fails("select create_invoice($1, -5, null, null)", [b.id], /service fee between/);
+    });
   });
 });

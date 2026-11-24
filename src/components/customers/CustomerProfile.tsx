@@ -10,6 +10,8 @@ import { cn, formatCurrency, formatDate, formatMoney, formatMonthYear, initials 
 import { addDays } from "@/lib/customer-history";
 import { compactPhone } from "@/lib/customer-validation";
 import { revealPassport } from "@/lib/actions/customers";
+import type { Invoice } from "@/types/invoices";
+import { InvoicesCard } from "@/components/invoices/InvoicesCard";
 import { todayIso, useCustomers } from "./CustomersProvider";
 import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
@@ -28,7 +30,7 @@ function yearsBetween(fromIso: string, toIso: string) {
 }
 
 
-export function CustomerProfile({ id }: { id: string }) {
+export function CustomerProfile({ id, invoices }: { id: string; invoices: Invoice[] | null }) {
   const { getCustomer, hydrated, addedIds, openEditForm, access } = useCustomers();
   const quotesVisible = useQuoteData().access.canView; // support agents don't see quotations
   const customer = getCustomer(id);
@@ -57,6 +59,7 @@ export function CustomerProfile({ id }: { id: string }) {
         </div>
         <div className="space-y-6 lg:col-span-2">
           <NotesCard customer={customer} onEdit={onEdit} />
+          {invoices && invoices.length > 0 && <InvoicesCard invoices={invoices} canManage={false} />}
           {quotesVisible && <QuotesCard customer={customer} today={today} />}
           <BookingsCard customer={customer} today={today} />
         </div>

@@ -136,9 +136,17 @@ export async function recordPayment(bookingDbId: unknown, raw: unknown): Promise
   if (first) return { ok: false, message: first };
 
   const amount = amountOf(v.amount);
+  // Payments belong to the booking's issued invoice, when there is one (migration 17: one active per booking).
+  const { data: invoice } = await supabase
+    .from("invoices")
+    .select("id")
+    .eq("booking_id", booking.dbId)
+    .in("status", ["Issued", "Paid"])
+    .maybeSingle();
   const { error } = await supabase.from("payments").insert({
     organization_id: orgId,
     booking_id: booking.dbId,
+    invoice_id: invoice?.id ?? null,
     amount,
     method: v.method,
     received_on: v.date,

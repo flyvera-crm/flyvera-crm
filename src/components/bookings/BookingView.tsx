@@ -5,6 +5,8 @@ import Link from "next/link";
 import type { BookingPayment } from "@/types/crm";
 import type { BookingTicketing } from "@/types/ticketing";
 import { TicketingPanel } from "@/components/tickets/TicketingPanel";
+import type { Invoice } from "@/types/invoices";
+import { InvoicesCard } from "@/components/invoices/InvoicesCard";
 import { useBookingData, useBookings } from "@/lib/booking-store";
 import { BOOKING_FLOW, bookingMoney, daysBetween, isRefund, nextStep, paymentState, refundState } from "@/lib/booking-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
@@ -19,7 +21,16 @@ import { BookingStatusBadge, PaymentBadge, TimingChip } from "./booking-ui";
 import { useBookingActions } from "./use-booking-actions";
 import { CancelModal, EditPaymentModal, RecordPaymentModal, RefundModal } from "./PaymentModals";
 
-export function BookingView({ id, ticketing }: { id: string; ticketing: BookingTicketing | null }) {
+export function BookingView({
+  id,
+  ticketing,
+  invoices,
+}: {
+  id: string;
+  ticketing: BookingTicketing | null;
+  /** This booking's invoices; null for roles that don't see invoices. */
+  invoices: Invoice[] | null;
+}) {
   const { bookings, today } = useBookings();
   const { access } = useBookingData();
   const actions = useBookingActions();
@@ -323,6 +334,13 @@ export function BookingView({ id, ticketing }: { id: string; ticketing: BookingT
 
         {/* ── Side column ── */}
         <aside className="space-y-6">
+          {invoices && (
+            <InvoicesCard
+              invoices={invoices}
+              booking={{ dbId: b.dbId!, code: b.id, cancelled: b.status === "Cancelled", balanceDue: b.balanceDue }}
+              canManage={access.canRecordMoney}
+            />
+          )}
           {showMoney && (
             <Card>
               <CardHeader title="Money" />

@@ -37,7 +37,8 @@ export const navSections: NavSection[] = [
       { label: "Quotations", href: "/quotations", icon: "document", description: "Build, send and track travel quotations." },
       { label: "Bookings", href: "/bookings", icon: "calendar", description: "All confirmed trips — flights, hotels and packages." },
       { label: "Tickets", href: "/tickets", icon: "ticket", description: "Issued e-tickets, reissues, refunds and voids." },
-      { label: "Payments", href: "/payments", icon: "card", description: "Invoices, receipts, balances and supplier payments." },
+      { label: "Payments", href: "/payments", icon: "card", description: "Receipts, balances, refunds and supplier payments." },
+      { label: "Invoices", href: "/invoices", icon: "wallet", description: "Numbered customer invoices and what's still to collect." },
     ],
   },
   {

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { CustomerProfile } from "@/components/customers/CustomerProfile";
 import { getCustomerData } from "@/lib/data/customers";
+import { getInvoices } from "@/lib/data/invoices";
 
 // Customers come from Supabase. getCustomerData() is cached per request, so this
 // shares the query the CRM layout already ran.
@@ -16,5 +17,6 @@ export default async function CustomerProfilePage({ params }: PageProps<"/custom
   const { id } = await params;
   // Customer codes look like "CU-1025"; anything else is a genuine 404.
   if (!/^CU-\d+$/.test(id)) notFound();
-  return <CustomerProfile id={id} />;
+  const { invoices, access } = await getInvoices();
+  return <CustomerProfile id={id} invoices={access.canView ? invoices.filter((i) => i.customerCode === id) : null} />;
 }

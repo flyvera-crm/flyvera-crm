@@ -2,6 +2,9 @@
 
 import { useTransition, type ReactNode } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { invoiceFromQuote } from "@/lib/actions/invoices";
+import { useToast } from "@/components/ui/Toast";
 import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { compactPhone } from "@/lib/customer-validation";
@@ -25,6 +28,9 @@ export function QuoteView({ id }: { id: string }) {
   const { createFromQuote } = useBookingActions();
   const { bookings } = useBookings();
   const canBook = useBookingData().access.canCreate;
+  const canInvoice = useBookingData().access.canRecordMoney; // finance & admins
+  const router = useRouter();
+  const toast = useToast();
   const [busy, startBusy] = useTransition();
   const quote = quotes.find((q) => q.id === id);
   const booking = quote && BOOKINGS_CONNECTED ? bookings.find((b) => b.quoteId === quote.id) : undefined;
@@ -103,6 +109,25 @@ export function QuoteView({ id }: { id: string }) {
               <ToolbarLink href={`/quotations/${quote.id}/edit`} icon="settings">
                 Edit
               </ToolbarLink>
+            )}
+            {canInvoice && quote.status === "Accepted" && quote.dbId && (
+              <ToolbarButton
+                icon="wallet"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    const r = await invoiceFromQuote(quote.dbId);
+                    if (!r.ok) {
+                      toast({ tone: "info", message: <p>{r.message}</p> });
+                      return;
+                    }
+                    if (r.message) toast({ tone: "info", message: <p>{r.message}</p> });
+                    router.push(`/invoices/${r.invoiceId}`);
+                  })
+                }
+              >
+                Create invoice
+              </ToolbarButton>
             )}
             {canEdit && (
               <ToolbarButton icon="document" disabled={busy} onClick={() => run(() => actions.duplicate(quote))}>
