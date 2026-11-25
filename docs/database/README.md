@@ -1,13 +1,16 @@
 # FLYVERA CRM — Database (Supabase / PostgreSQL)
 
-Status: **schema, security, seed and tests are ready. Nothing is connected yet.**
-The app still runs on browser demo data. No credentials exist in this repository.
+Status: **the app runs on Supabase.** Every module (customers, leads, quotations, bookings, payments, tickets,
+invoices, refunds, team, dashboard, settings, suppliers) reads and writes the database through Row Level Security.
+Migrations 01–21 are applied to the **staging** project only; production has not been set up yet — see
+[`docs/GO-LIVE.md`](../GO-LIVE.md). No credentials exist in this repository.
 
 ## Contents
-- `supabase/migrations/` — 14 ordered migrations (the only source of truth for the schema)
+- `supabase/migrations/` — 21 ordered migrations (the only source of truth for the schema)
 - `supabase/seed.sql` — **development data only** (generated; never load into production)
 - `supabase/scripts/build-seed.mjs` — builds `seed.sql` from the app's demo data (`npm run db:seed:build`)
 - `supabase/tests/` — PGlite test suite (`npm run db:test`) + a **test-only** Supabase stand-in (`supabase-shim.sql`)
+- `tests/unit/` — unit tests for the app's business rules (`npm run test:unit`)
 - `supabase/config.toml` — local Supabase CLI settings (no secrets)
 
 ## Migrations
@@ -27,6 +30,13 @@ The app still runs on browser demo data. No credentials exist in this repository
 | 12 | views | booking_financials, quotation_totals, customer_stats, money_ledger |
 | 13 | storage | private buckets `ticket-documents`, `travel-documents` + policies |
 | 14 | integrity_hardening | locked creator/requester columns, reviewer & verifier stamped by the database, archived records hidden from non-admins + archive functions, role filter on `quotation_totals` |
+| 15 | bookings_and_payment_corrections | `create_booking_from_quotation()` (atomic); `correct_payment()` — Finance corrects a payment only with a reason (before/after + reason in the audit log); direct payment edits revoked |
+| 16 | ticketing_integrity | `issue_ticket()` only with real issuance details on confirmed bookings with an active PNR; `change_ticket_status()` with a reason; links kept inside one booking; direct ticket writes revoked |
+| 17 | invoices | drafts unnumbered until `issue_invoice()`; one active invoice per booking; issued invoices frozen; `create_invoice()`, `refresh_invoice_draft()`, `void_invoice()` (reason required); customer and passengers snapshotted |
+| 18 | refund_requests | `request_refund()` → `approve_refund()` (requested amount or less) → `pay_refund()`, or `reject_refund()` / `withdraw_refund()`; `record_paid_refund()` (one step, marked "recorded directly"); separation of duties; direct refund writes revoked |
+| 19 | team_access | invitations with name, team, revoke and send tracking; access granted when the invitation is **accepted** (email confirmed); `invite_member()`, `change_member_role()` and `set_member_status()` (reason; not yourself; open work handed to a colleague), `team_directory()`; direct member/invitation writes revoked |
+| 20 | agency_settings | `update_agency_settings()` (admins; every value validated); direct `organizations` updates revoked; `invoices.issuer` freezes the agency details, bank details and terms when an invoice is issued |
+| 21 | gap_fills | customers with active bookings / quotations that became bookings can't be archived; lead stage changes logged automatically; timeline lines that mention money (`booking_events.mentions_money`) hidden from roles without money access |
 
 ## Relationships (main links)
 ```
@@ -59,11 +69,13 @@ record can never be linked to another organization's data. Readable codes (`CU-1
 | Prices, costs, payments, invoices | all | team's (read) | own (read) | read | **manage** | – |
 | Refunds | all | request | request | request | **approve & pay** | – |
 | Supplier payments | all | – | – | read | manage | – |
+| Supplier directory | manage | read | read | manage | manage | – |
+| Booking timeline lines with amounts | all | team's | own | all | all | **hidden** |
 | Passengers, passports | all | team's | own customers | all | – | – |
 | PNRs, segments, tickets | all | team's (read) | own (read) | **manage** | read tickets | read PNRs/segments |
 | WhatsApp | all | team's + unassigned | own | – | – | all |
 | Audit log | read | – | – | – | – | – |
-| Team, invitations, settings | manage | read | read | read | read | read |
+| Team, invitations, agency settings | manage | directory | directory | directory | directory | directory |
 
 Rules live in `private.*` functions (one place per rule). Logged-out visitors (`anon`) have **no**
 privileges. Disabled members lose all access. There is **no public sign-up**: a user gets access only if
@@ -96,6 +108,10 @@ All three behave the same way:
   the record doesn't exist, is already archived, or the caller isn't allowed to edit it.
 - Callable by signed-in users only (execute revoked from `anon`). They run as `SECURITY DEFINER` with
   a pinned `search_path`; the audit log still records the caller as the actor.
+
+Since migration 21, `archive_customer` also refuses a customer with active bookings (not completed or
+cancelled; the message names them), and `archive_quotation` refuses a quotation that became a booking.
+In the app: **Archive** on the customer, lead and quotation screens; admins restore from **Archived** on each list.
 
 From the frontend:
 ```ts
@@ -133,10 +149,17 @@ Sam (support), Tom (disabled), Nora (admin of the test agency).
 ```
 npm run db:test
 ```
-Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations + seed, and runs 61 tests:
-structure, seed totals vs the app, relationships and money rules, agency isolation, each of the six roles,
-passport protection, audit log, storage, and migration 14's integrity rules (locked columns, stamped
-reviewer/verifier, archiving).
+Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations + seed, and runs **102 tests**
+in 21 sections: structure, seed totals vs the app, relationships and money rules, agency isolation, each of
+the six roles, passport protection, audit log, storage, and the rules of migrations 14–21 (archiving,
+booking creation and payment corrections, ticketing, invoices, refund requests, team & access, dashboard
+data, agency settings, gap fills).
+
+```
+npm run test:unit
+```
+Runs the unit tests for the app's pure business rules (dashboard figures, CSV exports, settings, suppliers,
+lead activity, invoice wording, security headers, navigation) with Node's test runner — no database needed.
 
 ### What PGlite tests do NOT cover
 PGlite is real PostgreSQL, but `supabase/tests/supabase-shim.sql` only imitates Supabase. Not tested:
@@ -145,9 +168,6 @@ rest, Supabase's exact default grants and Postgres version (PGlite is PG 18; Sup
 performance with real data volumes, and webhooks. **Before going live, apply the migrations to a Supabase
 staging project and test the main flows with real logins for every role.**
 
-## Going live (later, not done yet)
-1. Create a Supabase project; keep URL/keys in `.env.local` (ignored by git). Never commit the service-role key.
-2. `supabase link` then `supabase db push` (applies migrations only; **do not** load `seed.sql`).
-3. Create the Vault encryption key (above).
-4. Create the FLYVERA organization and the first admin with the service role, then invite staff.
-5. Test every role on staging, then connect the screens module by module.
+## Going live
+Follow [`docs/GO-LIVE.md`](../GO-LIVE.md). In short: production environment variables and Auth settings,
+`db push` of migrations 01–21 **without the seed**, the Vault passport key, then the first agency and admin.

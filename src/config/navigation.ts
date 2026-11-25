@@ -8,6 +8,8 @@ export type NavItem = {
   badge?: string;
   /** A count worked out from live data in the sidebar (shown only when above 0). */
   liveBadge?: "leadFollowUps";
+  /** Not built yet: left out of the sidebar; its page shows "coming soon" if opened directly. */
+  planned?: true;
 };
 
 export type NavSection = {
@@ -28,14 +30,14 @@ export const navSections: NavSection[] = [
     items: [
       { label: "Customers", href: "/customers", icon: "users", description: "Traveller profiles, passports, preferences and trip history." },
       { label: "Leads", href: "/leads", icon: "target", description: "Track enquiries from first contact to confirmed booking.", liveBadge: "leadFollowUps" },
-      { label: "WhatsApp", href: "/whatsapp", icon: "chat", description: "Chat with travellers and send itineraries over WhatsApp." },
-      { label: "AI Assistant", href: "/ai-assistant", icon: "sparkles", description: "Draft itineraries, replies and quotations with AI." },
+      { label: "WhatsApp", href: "/whatsapp", icon: "chat", description: "Chat with travellers and send itineraries over WhatsApp.", planned: true },
+      { label: "AI Assistant", href: "/ai-assistant", icon: "sparkles", description: "Draft itineraries, replies and quotations with AI.", planned: true },
     ],
   },
   {
     title: "Operations",
     items: [
-      { label: "Flights", href: "/flights", icon: "plane", description: "Search fares, manage PNRs and monitor schedule changes." },
+      { label: "Flights", href: "/flights", icon: "plane", description: "Search fares, manage PNRs and monitor schedule changes.", planned: true },
       { label: "Quotations", href: "/quotations", icon: "document", description: "Build, send and track travel quotations." },
       { label: "Bookings", href: "/bookings", icon: "calendar", description: "All confirmed trips — flights, hotels and packages." },
       { label: "Tickets", href: "/tickets", icon: "ticket", description: "Issued e-tickets, reissues, refunds and voids." },
@@ -55,6 +57,11 @@ export const navSections: NavSection[] = [
 ];
 
 export const allNavItems = navSections.flatMap((s) => s.items);
+
+/** What the sidebar shows: built modules only (sections left empty are dropped). */
+export const sidebarSections: NavSection[] = navSections
+  .map((s) => ({ ...s, items: s.items.filter((i) => !i.planned) }))
+  .filter((s) => s.items.length > 0);
 
 export function getNavItem(href: string): NavItem {
   const item = allNavItems.find((i) => i.href === href);

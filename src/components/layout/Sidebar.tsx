@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { navSections } from "@/config/navigation";
+import { sidebarSections, type NavItem } from "@/config/navigation";
 import { Icon } from "@/components/icons";
 import { cn } from "@/lib/format";
 import { useLeadList } from "@/lib/lead-store";
@@ -21,7 +21,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const leads = useLeadList();
   const hydrated = useHydrated();
   const followUps = hydrated ? followUpsDue(leads, todayIso()).length : 0;
-  const badgeFor = (item: (typeof navSections)[number]["items"][number]) =>
+  const badgeFor = (item: NavItem) =>
     item.liveBadge === "leadFollowUps" ? (followUps > 0 ? String(followUps) : undefined) : item.badge;
 
   return (
@@ -56,7 +56,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         <nav className="scrollbar-thin flex-1 overflow-y-auto px-4 pb-6">
-          {navSections.map((section) => (
+          {sidebarSections.map((section) => (
             <div key={section.title} className="mt-5 first:mt-2">
               <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-navy-300/70">
                 {section.title}
@@ -101,17 +101,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             </div>
           ))}
         </nav>
-
-        {/* Upgrade / premium card */}
-        <div className="m-4 rounded-2xl border border-gold-500/30 bg-gradient-to-br from-navy-800 to-navy-900 p-4">
-          <div className="flex items-center gap-2 text-gold-300">
-            <Icon name="crown" size={18} />
-            <p className="text-sm font-semibold">FLYVERA Premium</p>
-          </div>
-          <p className="mt-1.5 text-xs leading-relaxed text-navy-200">
-            Live GDS fares, WhatsApp automation and AI itineraries — coming soon.
-          </p>
-        </div>
       </aside>
     </>
   );

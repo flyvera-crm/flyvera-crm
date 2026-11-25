@@ -7,7 +7,7 @@ import type { Invoice, InvoiceStatus } from "@/types/invoices";
 import { balanceDue, invoiceStatus, validateCreateInvoice, validateIssueInvoice, validateVoidReason, type CreateInvoiceValues, type IssueInvoiceValues } from "@/lib/invoice-rules";
 import { receiptNumber } from "@/lib/payment-ledger";
 import { useAgencySettings } from "@/lib/settings-store";
-import { invoiceSource, letterhead } from "@/lib/settings-rules";
+import { invoiceSource, invoiceTitle, letterhead } from "@/lib/settings-rules";
 import { Letterhead, PaymentDetails } from "@/components/documents/Letterhead";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
@@ -38,7 +38,7 @@ export function InvoiceDocument({ invoice: inv, today }: { invoice: Invoice; tod
   return (
     <article className="overflow-hidden rounded-2xl border border-navy-100 bg-white shadow-sm print:rounded-none print:border-0 print:shadow-none">
       <header className="flex flex-col gap-4 bg-navy-900 px-6 py-6 text-white sm:flex-row sm:items-start sm:justify-between sm:px-10">
-        <Letterhead head={head} subtitle={status === "Draft" ? "Draft invoice" : "Tax invoice"} />
+        <Letterhead head={head} subtitle={invoiceTitle(status, source.profile)} />
         <div className="sm:text-right">
           <p className="text-xs font-semibold uppercase tracking-wider text-navy-200">{inv.number ? "Invoice" : "Draft invoice"}</p>
           <p className="font-mono text-lg">{inv.number ?? "Not numbered yet"}</p>

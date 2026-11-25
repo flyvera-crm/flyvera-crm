@@ -295,3 +295,12 @@ export function invoiceSource(issuer: Record<string, unknown> | null | undefined
   }
   return { name: s.name, profile: s.profile, terms: s.defaults.invoiceTerms };
 }
+
+/**
+ * Document title for an invoice: "Tax invoice" only when the agency details printed on it include a tax
+ * registration number (issued invoices: their frozen copy; drafts: the current settings), else "Invoice".
+ */
+export function invoiceTitle(status: string, profile: Pick<AgencyProfile, "taxNumber">) {
+  if (status === "Draft") return "Draft invoice";
+  return profile.taxNumber.trim() ? "Tax invoice" : "Invoice";
+}

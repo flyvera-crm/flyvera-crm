@@ -3,7 +3,7 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import type { Invoice } from "@/types/invoices";
 import { balanceDue, invoiceStatus } from "@/lib/invoice-rules";
-import { invoiceSource, letterhead, type AgencySettings } from "@/lib/settings-rules";
+import { invoiceSource, invoiceTitle, letterhead, type AgencySettings } from "@/lib/settings-rules";
 
 const NAVY = rgb(0.043, 0.122, 0.227);
 const GREY = rgb(0.33, 0.42, 0.55);
@@ -80,7 +80,7 @@ export async function invoicePdf(inv: Invoice, today: string, settings: AgencySe
   text(head.name, M, 22, bold, rgb(1, 1, 1));
   right(inv.number ? `INVOICE ${inv.number}` : "DRAFT INVOICE", W - M, 14, bold, rgb(1, 1, 1));
   y -= 18;
-  text(status === "Draft" ? "Draft invoice" : "Tax invoice", M, 9, font, GOLD);
+  text(invoiceTitle(status, source.profile), M, 9, font, GOLD);
   right(inv.issueOn ? `Issued ${date(inv.issueOn)}` : "Not issued yet", W - M, 9, font, rgb(0.85, 0.9, 1));
   y -= 13;
   right(inv.dueOn ? `Due ${date(inv.dueOn)}` : "", W - M, 9, font, rgb(0.85, 0.9, 1));
@@ -95,7 +95,7 @@ export async function invoicePdf(inv: Invoice, today: string, settings: AgencySe
     text(`VOID${inv.voidReason ? ` - ${inv.voidReason}` : ""}`, M, 12, bold, rgb(0.75, 0.1, 0.15));
     y -= 22;
   } else if (status === "Draft") {
-    text("DRAFT - not a valid tax invoice until issued", M, 11, bold, rgb(0.6, 0.4, 0));
+    text("DRAFT - not a valid invoice until issued", M, 11, bold, rgb(0.6, 0.4, 0));
     y -= 22;
   }
 
