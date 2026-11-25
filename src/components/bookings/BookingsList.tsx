@@ -4,14 +4,14 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Booking, BookingStatus } from "@/types/crm";
-import { bookingStore, useBookings } from "@/lib/booking-store";
+import { useBookingData, useBookings } from "@/lib/booking-store";
 import { bookingMoney, paymentState } from "@/lib/booking-rules";
 import { fold } from "@/lib/customer-search";
 import { addDays } from "@/lib/dates";
 import { Card } from "@/components/ui/Card";
 import { Icon, type IconName } from "@/components/icons";
-import { cn, formatCurrency, formatDayMonth, formatMoney } from "@/lib/format";
-import { BookingStatusBadge, PaidBar, PaymentBadge, TimingChip } from "./booking-ui";
+import { cn, formatCurrency, formatDayMonth } from "@/lib/format";
+import { BookingStatusBadge, bookingTotalLabel, PaidBar, PaymentBadge, TimingChip } from "./booking-ui";
 
 type Tab = BookingStatus | "All" | "Overdue";
 const TABS: Tab[] = ["All", "Overdue", "Pending", "Confirmed", "Ticketed", "Completed", "Cancelled"];
@@ -50,7 +50,8 @@ function Stat({ label, value, hint, icon, tone }: { label: string; value: string
 }
 
 export function BookingsList() {
-  const { bookings, today, addedIds, changedCount } = useBookings();
+  const { bookings, today, addedIds } = useBookings();
+  const { canSeeMoney } = useBookingData().access;
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("All");
   const [query, setQuery] = useState("");
@@ -74,13 +75,24 @@ export function BookingsList() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Booked value" value={formatCurrency(booked, { compact: true })} hint="Excluding cancellations" icon="wallet" tone="gold" />
+        <Stat
+          label="Booked value"
+          value={canSeeMoney ? formatCurrency(booked, { compact: true }) : "—"}
+          hint={canSeeMoney ? "Excluding cancellations" : "Not shown for your role"}
+          icon="wallet"
+          tone="gold"
+        />
         <Stat label="Departing in 30 days" value={today ? String(upcoming.length) : "—"} hint="Check documents are ready" icon="plane" />
-        <Stat label="Outstanding balance" value={formatCurrency(outstanding, { compact: true })} hint="Still to collect" icon="card" />
+        <Stat
+          label="Outstanding balance"
+          value={canSeeMoney ? formatCurrency(outstanding, { compact: true }) : "—"}
+          hint={canSeeMoney ? "Still to collect" : "Not shown for your role"}
+          icon="card"
+        />
         <Stat
           label="Overdue payments"
-          value={today ? String(overdue.length) : "—"}
-          hint={overdue.length ? "Chase these today" : "All payments on track"}
+          value={today && canSeeMoney ? String(overdue.length) : "—"}
+          hint={!canSeeMoney ? "Not shown for your role" : overdue.length ? "Chase these today" : "All payments on track"}
           icon="alert"
           tone={overdue.length ? "rose" : undefined}
         />
@@ -121,7 +133,9 @@ export function BookingsList() {
           <div className="flex flex-col items-center px-6 py-16 text-center">
             <Icon name="calendar" size={28} className="text-navy-300" />
             <p className="mt-3 font-semibold text-navy-900">No bookings here</p>
-            <p className="mt-1 text-sm text-navy-400">Try another tab or search.</p>
+            <p className="mt-1 text-sm text-navy-400">
+              {bookings.length ? "Try another tab or search." : "Bookings are created from accepted quotations."}
+            </p>
           </div>
         ) : (
           <>
@@ -140,7 +154,7 @@ export function BookingsList() {
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1">
-                      <span className="font-semibold tabular-nums text-navy-900">{formatMoney(bookingMoney(b).total)}</span>
+                      <span className="font-semibold tabular-nums text-navy-900">{bookingTotalLabel(b)}</span>
                       <BookingStatusBadge status={b.status} />
                     </div>
                   </div>
@@ -196,7 +210,7 @@ export function BookingsList() {
                         <TimingChip booking={b} today={today} />
                       </td>
                       <td className="hidden px-3 py-3.5 xl:table-cell">
-                        {b.status !== "Cancelled" && <PaidBar booking={b} />}
+                        {b.status !== "Cancelled" && !b.moneyHidden && <PaidBar booking={b} />}
                       </td>
                       <td className="px-3 py-3.5">
                         <div className="flex flex-col items-start gap-1">
@@ -205,7 +219,7 @@ export function BookingsList() {
                         </div>
                       </td>
                       <td className="whitespace-nowrap py-3.5 pl-3 pr-6 text-right font-semibold tabular-nums text-navy-900">
-                        {formatMoney(bookingMoney(b).total)}
+                        {bookingTotalLabel(b)}
                       </td>
                     </tr>
                   ))}
@@ -213,18 +227,6 @@ export function BookingsList() {
               </table>
             </div>
           </>
-        )}
-        {changedCount > 0 && (
-          <div className="border-t border-navy-50 px-6 py-3 text-right text-sm">
-            <button
-              onClick={() => {
-                if (window.confirm(`Undo ${changedCount} change(s) to bookings and restore the demo data?`)) bookingStore.clear();
-              }}
-              className="text-navy-400 hover:text-rose-600"
-            >
-              Reset demo data
-            </button>
-          </div>
         )}
       </Card>
     </div>

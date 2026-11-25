@@ -5,15 +5,17 @@ import {
   bookingMoney,
   isRefund,
   paymentState,
-  SUPPLIER_DAYS_BEFORE_DEPARTURE,
   SUPPLIER_PAYABLE_STATUSES,
 } from "@/lib/booking-rules";
+import { BUILT_IN_DEFAULTS } from "@/lib/settings-rules";
 
 export type LedgerEntry = { booking: Booking; payment: BookingPayment; receiptNo: string; signedAmount: number };
 
 /** "FV-10481" + "p2" → "RC-10481-2" */
 export function receiptNumber(bookingId: string, paymentId: string) {
-  return `RC-${bookingId.replace(/\D/g, "")}-${paymentId.replace(/\D/g, "")}`;
+  // Same format the database uses: RC-<booking>-<n> for payments, RF-<booking>-<n> for refunds ("r1", "r2"…).
+  const prefix = paymentId.startsWith("r") ? "RF" : "RC";
+  return `${prefix}-${bookingId.replace(/\D/g, "")}-${paymentId.replace(/\D/g, "")}`;
 }
 
 /** Every payment and refund across all bookings, newest first. Refunds count as negative. */
@@ -72,13 +74,14 @@ export function customerDues(bookings: Booking[], today: string | null) {
 export type Payable = { booking: Booking; service: BookingService; dueDate: string };
 
 /** Services the agency still has to pay suppliers for, soonest first. */
-export function supplierPayables(bookings: Booking[]): Payable[] {
+/** `daysBefore` = the agency's "pay suppliers this many days before departure" setting. */
+export function supplierPayables(bookings: Booking[], daysBefore = BUILT_IN_DEFAULTS.supplierDaysBeforeDeparture): Payable[] {
   return bookings
     .filter((b) => SUPPLIER_PAYABLE_STATUSES.includes(b.status))
     .flatMap((booking) =>
       booking.services
         .filter((s) => s.cost > 0 && !s.supplierPaidOn)
-        .map((service) => ({ booking, service, dueDate: addDays(booking.departDate, -SUPPLIER_DAYS_BEFORE_DEPARTURE) })),
+        .map((service) => ({ booking, service, dueDate: addDays(booking.departDate, -daysBefore) })),
     )
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 }

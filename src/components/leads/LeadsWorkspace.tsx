@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { useHydrated } from "@/lib/dates";
 import type { Lead, LeadPriority, LeadSource } from "@/types/crm";
 import { LEAD_PRIORITIES, LEAD_SOURCES } from "@/config/lead-options";
-import { AGENTS } from "@/config/customer-options";
 import { fold } from "@/lib/customer-search";
 import { compactPhone } from "@/lib/customer-validation";
 import { Card } from "@/components/ui/Card";
@@ -68,7 +67,9 @@ function Select<T extends string>({
 }
 
 export function LeadsWorkspace() {
-  const { leads, today, changedCount, resetLeads } = useLeads();
+  const { leads, today } = useLeads();
+  // Agent filter: everyone who has leads in this user's view.
+  const agentNames = useMemo(() => [...new Set(leads.map((l) => l.agent))].sort((a, b) => a.localeCompare(b)), [leads]);
   // Board/List choice: what you picked now, else what you picked last time (read after hydration).
   const hydrated = useHydrated();
   const [chosenView, setChosenView] = useState<View | null>(null);
@@ -146,7 +147,7 @@ export function LeadsWorkspace() {
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <Select label="Sources" value={source} onChange={setSource} options={LEAD_SOURCES.map((s) => s.value)} />
-            <Select label="Agents" value={agent} onChange={setAgent} options={AGENTS} />
+            <Select label="Agents" value={agent} onChange={setAgent} options={agentNames} />
             <Select label="Priorities" value={priority} onChange={setPriority} options={LEAD_PRIORITIES} />
             <div className="flex rounded-xl border border-navy-100 bg-white p-1" role="group" aria-label="View">
               {(["board", "list"] as const).map((v) => (
@@ -166,7 +167,7 @@ export function LeadsWorkspace() {
             </div>
           </div>
         </div>
-        {(hasFilters || changedCount > 0 || view === "list") && (
+        {(hasFilters || view === "list") && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-navy-50 pt-3 text-sm" aria-live="polite">
             <p className="text-navy-500">
               {hasFilters ? (
@@ -194,11 +195,6 @@ export function LeadsWorkspace() {
                   </select>
                 </label>
               )}
-              {changedCount > 0 && (
-                <button onClick={resetLeads} className="text-navy-400 hover:text-rose-600">
-                  Reset demo data
-                </button>
-              )}
               {hasFilters && (
                 <button onClick={clearAll} className="font-medium text-sky-brand-dark hover:text-navy-900">
                   Clear filters
@@ -210,7 +206,17 @@ export function LeadsWorkspace() {
       </Card>
 
       {/* ── Board or list ── */}
-      {filtered.length === 0 ? (
+      {leads.length === 0 ? (
+        <Card className="flex flex-col items-center px-6 py-16 text-center">
+          <div className="grid size-14 place-items-center rounded-2xl bg-navy-50 text-navy-400">
+            <Icon name="target" size={24} />
+          </div>
+          <p className="mt-4 font-semibold text-navy-900">No leads yet</p>
+          <p className="mt-1 max-w-sm text-sm text-navy-400">
+            Use <span className="font-medium text-navy-700">New lead</span> to capture your first travel enquiry.
+          </p>
+        </Card>
+      ) : filtered.length === 0 ? (
         <Card className="flex flex-col items-center px-6 py-16 text-center">
           <div className="grid size-14 place-items-center rounded-2xl bg-navy-50 text-navy-400">
             <Icon name="search" size={24} />

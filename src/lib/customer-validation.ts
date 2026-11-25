@@ -1,5 +1,6 @@
-// Pure validation for the Add customer form (no React, no browser APIs),
-// so the exact same rules can later run inside a Server Action.
+// Pure validation for the Add/Edit customer form (no React, no browser APIs).
+// The same rules run in the browser (instant feedback) and in the Server Action
+// (src/lib/actions/customers.ts) before anything is written to the database.
 import type { ContactMethod, Customer, CustomerTier, SeatPreference } from "@/types/crm";
 
 export type CustomerFormValues = {
@@ -11,10 +12,11 @@ export type CustomerFormValues = {
   nationality: string;
   city: string;
   country: string;
-  passportNumber: string;
+  passportNumber: string; // empty when editing = keep the stored number
   passportExpiry: string;
+  passportIssuingCountry: string;
   tier: CustomerTier;
-  agent: string;
+  agent: string; // the assigned agent's user id
   preferredContact: ContactMethod;
   seatPreference: SeatPreference;
   favouriteDestination: string;
@@ -36,6 +38,7 @@ export const emptyCustomerForm: CustomerFormValues = {
   country: "",
   passportNumber: "",
   passportExpiry: "",
+  passportIssuingCountry: "",
   tier: "Standard",
   agent: "",
   preferredContact: "WhatsApp",
@@ -69,11 +72,23 @@ function yearsBetween(fromIso: string, toIso: string) {
   return ty - fy - (tm < fm || (tm === fm && td < fd) ? 1 : 0);
 }
 
+export type ValidateOptions = {
+  /** A passport is already on file: the number may be left empty (= keep it). */
+  storedPassport?: boolean;
+};
+
 /**
  * Returns blocking `errors` and non-blocking `warnings`.
  * `today` is passed in (YYYY-MM-DD) so results are predictable and testable.
+ * `existing` = other customers this user can see, for duplicate checks (the
+ * database also rejects duplicates this user can't see).
  */
-export function validateCustomer(values: CustomerFormValues, existing: Customer[], today: string) {
+export function validateCustomer(
+  values: CustomerFormValues,
+  existing: Customer[],
+  today: string,
+  { storedPassport = false }: ValidateOptions = {},
+) {
   const errors: Messages = {};
   const warnings: Messages = {};
   const v = {
@@ -124,11 +139,14 @@ export function validateCustomer(values: CustomerFormValues, existing: Customer[
   if (!v.city) errors.city = "City is required.";
   if (!v.country) errors.country = "Country is required.";
 
-  // Passport (optional, but number and expiry go together)
+  // Passport (optional, but number, expiry and issuing country go together)
+  const hasPassport = Boolean(v.passportNumber) || storedPassport;
   if (v.passportNumber && !PASSPORT_RE.test(v.passportNumber))
     errors.passportNumber = "Passport numbers are 6–9 letters or digits, no spaces.";
-  if (v.passportNumber && !v.passportExpiry) errors.passportExpiry = "Add the passport expiry date.";
-  if (!v.passportNumber && v.passportExpiry) errors.passportNumber = "Add the passport number too.";
+  if (hasPassport && !v.passportExpiry) errors.passportExpiry = "Add the passport expiry date.";
+  if (!hasPassport && v.passportExpiry) errors.passportNumber = "Add the passport number too.";
+  if (hasPassport && !values.passportIssuingCountry.trim())
+    errors.passportIssuingCountry = "Add the country that issued the passport.";
   if (v.passportExpiry) {
     if (v.passportExpiry <= today) errors.passportExpiry = "This passport has expired.";
     else if (v.passportExpiry < addMonths(today, 6))
@@ -144,37 +162,15 @@ export function validateCustomer(values: CustomerFormValues, existing: Customer[
   return { errors, warnings };
 }
 
-/** Builds a clean Customer record from valid form values. */
-export function toCustomer(values: CustomerFormValues, id: string, today: string): Customer {
-  const tidy = (s: string) => s.trim().replace(/\s+/g, " ");
-  const optional = (s: string) => tidy(s) || undefined;
-  return {
-    id,
-    name: `${tidy(values.firstName)} ${tidy(values.lastName)}`,
-    email: values.email.trim().toLowerCase(),
-    phone: tidy(values.phone),
-    city: tidy(values.city),
-    country: tidy(values.country),
-    tier: values.tier,
-    status: "Active",
-    trips: 0,
-    lifetimeValue: 0,
-    lastTrip: null,
-    favouriteDestination: tidy(values.favouriteDestination),
-    agent: values.agent,
-    joined: today,
-    dateOfBirth: optional(values.dateOfBirth),
-    nationality: optional(values.nationality),
-    passportNumber: optional(values.passportNumber.toUpperCase()),
-    passportExpiry: optional(values.passportExpiry),
-    preferredContact: values.preferredContact,
-    seatPreference: values.seatPreference,
-    whatsappOptIn: values.whatsappOptIn,
-    notes: optional(values.notes),
-  };
+/** Collapses runs of spaces and trims. */
+export function tidy(s: string) {
+  return s.trim().replace(/\s+/g, " ");
 }
 
-/** Fills the form from an existing customer (for editing). */
+/**
+ * Fills the form from an existing customer (for editing). The passport number
+ * stays empty: it's encrypted, and leaving it empty keeps the stored one.
+ */
 export function customerToFormValues(c: Customer): CustomerFormValues {
   const [firstName, ...rest] = c.name.split(" ");
   return {
@@ -187,32 +183,15 @@ export function customerToFormValues(c: Customer): CustomerFormValues {
     nationality: c.nationality ?? "",
     city: c.city,
     country: c.country,
-    passportNumber: c.passportNumber ?? "",
-    passportExpiry: c.passportExpiry ?? "",
+    passportNumber: "",
+    passportExpiry: c.passport?.expiry ?? "",
+    passportIssuingCountry: c.passport?.issuingCountry ?? "",
     tier: c.tier,
-    agent: c.agent,
+    agent: c.agentId ?? "",
     preferredContact: c.preferredContact ?? emptyCustomerForm.preferredContact,
     seatPreference: c.seatPreference ?? emptyCustomerForm.seatPreference,
     favouriteDestination: c.favouriteDestination,
     whatsappOptIn: c.whatsappOptIn ?? false,
     notes: c.notes ?? "",
   };
-}
-
-/** Applies edited form values to a customer, keeping ID, history and stats. */
-export function applyCustomerEdits(existing: Customer, values: CustomerFormValues): Customer {
-  const updated = toCustomer(values, existing.id, existing.joined);
-  return {
-    ...updated,
-    status: existing.status,
-    trips: existing.trips,
-    lifetimeValue: existing.lifetimeValue,
-    lastTrip: existing.lastTrip,
-  };
-}
-
-/** CU-1024 → CU-1025 (based on the highest existing number). */
-export function nextCustomerId(existing: Customer[]) {
-  const max = existing.reduce((m, c) => Math.max(m, Number(c.id.replace(/\D/g, "")) || 0), 1000);
-  return `CU-${max + 1}`;
 }

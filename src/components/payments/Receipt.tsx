@@ -4,24 +4,26 @@ import Link from "next/link";
 import { useBookings } from "@/lib/booking-store";
 import { bookingMoney, isRefund } from "@/lib/booking-rules";
 import { balanceAfter, receiptNumber } from "@/lib/payment-ledger";
-import { siteConfig } from "@/config/site";
+import { useAgencySettings } from "@/lib/settings-store";
+import { letterhead } from "@/lib/settings-rules";
+import { Letterhead } from "@/components/documents/Letterhead";
 import { Card } from "@/components/ui/Card";
 import { Icon } from "@/components/icons";
 import { formatDate, formatMoney } from "@/lib/format";
 
 /** Printable payment receipt (or refund note) for one payment on a booking. */
 export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId: string }) {
-  const { bookings, hydrated } = useBookings();
+  const { bookings } = useBookings();
+  const settings = useAgencySettings();
   const b = bookings.find((x) => x.id === bookingId);
   const p = b?.payments.find((x) => x.id === paymentId);
 
-  if (!b || !p) {
-    if (!hydrated) return <div className="h-96 animate-pulse rounded-2xl bg-navy-50" aria-busy="true" />;
+  if (!b || !p || b.moneyHidden) {
     return (
       <Card className="flex flex-col items-center px-6 py-20 text-center">
         <Icon name="document" size={28} className="text-navy-300" />
         <h1 className="mt-4 text-xl font-semibold text-navy-900">Receipt not found</h1>
-        <p className="mt-2 text-sm text-navy-400">This payment may have been removed, or was recorded in a different browser.</p>
+        <p className="mt-2 text-sm text-navy-400">There&apos;s no such payment on a booking you can see.</p>
         <Link href="/payments" className="mt-6 rounded-xl bg-navy-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-navy-800">
           All payments
         </Link>
@@ -50,10 +52,7 @@ export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId
 
       <article className="overflow-hidden rounded-2xl border border-navy-100 bg-white shadow-sm print:rounded-none print:border-0 print:shadow-none">
         <header className="flex flex-col gap-4 bg-navy-900 px-6 py-6 text-white sm:flex-row sm:items-start sm:justify-between sm:px-10">
-          <div>
-            <p className="text-2xl font-bold tracking-[0.2em]">{siteConfig.name}</p>
-            <p className="text-xs font-medium uppercase tracking-wider text-gold-300">{refund ? "Refund note" : "Payment receipt"}</p>
-          </div>
+          <Letterhead head={letterhead(settings.name, settings.profile)} subtitle={refund ? "Refund note" : "Payment receipt"} />
           <div className="sm:text-right">
             <p className="font-mono text-lg">{no}</p>
             <p className="text-sm text-navy-200">{formatDate(p.date)}</p>
@@ -68,6 +67,12 @@ export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId
               by {p.method}
               {p.note && <> · {p.note}</>}
             </p>
+            {p.corrected && (
+              <p className="mt-2 text-xs text-amber-700">
+                This payment was corrected by Finance after it was first recorded. The original values and the reason are kept in the
+                agency&apos;s audit log.
+              </p>
+            )}
           </div>
 
           <dl className="grid grid-cols-1 gap-x-8 gap-y-4 text-sm sm:grid-cols-2">
@@ -89,10 +94,10 @@ export function Receipt({ bookingId, paymentId }: { bookingId: string; paymentId
           </dl>
 
           <footer className="flex flex-col gap-4 border-t border-navy-100 pt-6 text-xs text-navy-500 sm:flex-row sm:justify-between">
-            <p>Thank you for travelling with {siteConfig.name}. Please keep this {refund ? "note" : "receipt"} for your records.</p>
+            <p>Thank you for travelling with {settings.name}. Please keep this {refund ? "note" : "receipt"} for your records.</p>
             <p className="sm:text-right">
               Issued by <span className="font-semibold text-navy-900">{b.agent}</span>
-              <span className="block">{siteConfig.product}</span>
+              <span className="block">{settings.profile.legalName || settings.name}</span>
             </p>
           </footer>
         </div>

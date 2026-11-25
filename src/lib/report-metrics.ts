@@ -181,9 +181,20 @@ export function teamPerformance(agents: string[], data: { bookings: Booking[]; q
 
 /* ── CSV ── */
 
-/** Builds CSV text; values with commas, quotes or line breaks are quoted safely. */
+/**
+ * Spreadsheet apps run cells that start with = + - @ as formulas ("CSV injection"), and turn
+ * "+971…" phone numbers into plain numbers. A leading apostrophe keeps such text cells as text.
+ * Numbers (including negative amounts) are left as numbers.
+ */
+export function safeCell(value: string | number | null | undefined) {
+  if (typeof value !== "string") return value;
+  return /^[=+@\t\r-]/.test(value) ? `'${value}` : value;
+}
+
+/** Builds CSV text: formula-safe, and values with commas, quotes or line breaks are quoted. */
 export function toCsv(rows: (string | number | null | undefined)[][]) {
-  const cell = (v: string | number | null | undefined) => {
+  const cell = (raw: string | number | null | undefined) => {
+    const v = safeCell(raw);
     const s = v === null || v === undefined ? "" : String(v);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };

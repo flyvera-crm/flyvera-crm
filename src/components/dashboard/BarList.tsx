@@ -10,7 +10,7 @@ export function BarList({
   format?: (v: number) => string;
   unit?: string;
 }) {
-  const max = Math.max(...data.map((d) => d.value));
+  const max = Math.max(1, ...data.map((d) => d.value));
   return (
     <ul className="space-y-3.5">
       {data.map((d) => (

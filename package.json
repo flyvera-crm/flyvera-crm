@@ -8,10 +8,14 @@
     "start": "next start",
     "lint": "eslint",
     "db:test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --test --test-reporter=spec supabase/tests/",
+    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --import ./tests/unit/setup.mjs --test --test-reporter=spec tests/unit/",
     "db:seed:build": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON supabase/scripts/build-seed.mjs"
   },
   "dependencies": {
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.119.0",
     "next": "16.4.6",
+    "pdf-lib": "1.17.1",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

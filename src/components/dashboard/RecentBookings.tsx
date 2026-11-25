@@ -3,9 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useBookings } from "@/lib/booking-store";
-import { bookingMoney } from "@/lib/booking-rules";
-import { BookingStatusBadge, PaymentBadge } from "@/components/bookings/booking-ui";
-import { formatDayMonth, formatMoney, initials } from "@/lib/format";
+import { BookingStatusBadge, bookingTotalLabel, PaymentBadge } from "@/components/bookings/booking-ui";
+import { formatDayMonth, initials } from "@/lib/format";
 
 /** The 6 most recently created bookings (same data as the Bookings page). */
 export function RecentBookings() {
@@ -28,7 +27,7 @@ export function RecentBookings() {
               </p>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <span className="text-sm font-semibold tabular-nums text-navy-900">{formatMoney(bookingMoney(b).total)}</span>
+              <span className="text-sm font-semibold tabular-nums text-navy-900">{bookingTotalLabel(b)}</span>
               <BookingStatusBadge status={b.status} />
             </div>
           </li>
@@ -79,7 +78,7 @@ export function RecentBookings() {
                 </td>
                 <td className="whitespace-nowrap px-3 py-3.5 text-navy-600">{formatDayMonth(b.departDate)}</td>
                 <td className="whitespace-nowrap px-3 py-3.5 text-right font-semibold tabular-nums text-navy-900">
-                  {formatMoney(bookingMoney(b).total)}
+                  {bookingTotalLabel(b)}
                 </td>
                 <td className="px-6 py-3.5">
                   <div className="flex flex-wrap items-center gap-1">

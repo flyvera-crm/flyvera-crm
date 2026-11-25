@@ -2,75 +2,70 @@
 
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
-import type { Booking, BookingPayment, Customer, Quotation } from "@/types/crm";
-import { bookingStore, useBookings } from "@/lib/booking-store";
-import { leadStore, useLeadList } from "@/lib/lead-store";
-import {
-  bookingFromQuote,
-  bookingMoney,
-  nextBookingId,
-  nextStep,
-  STATUS_EVENT,
-  type PaymentFormValues,
-} from "@/lib/booking-rules";
+import type { Booking, Customer, Quotation, RefundRequest } from "@/types/crm";
+import { useBookingData, useBookings } from "@/lib/booking-store";
+import { useLeadData } from "@/lib/lead-store";
+import * as server from "@/lib/actions/bookings";
+import * as refunds from "@/lib/actions/refunds";
+import type { ApproveValues, PayValues } from "@/lib/refund-rules";
+import type { RecordRefundValues } from "./RefundModals";
+import { bookingMoney, STATUS_EVENT, type PaymentCorrectionValues, type PaymentFormValues } from "@/lib/booking-rules";
 import { compactPhone } from "@/lib/customer-validation";
 import { splitName } from "@/lib/lead-validation";
-import { todayIso } from "@/lib/dates";
 import { formatMoney } from "@/lib/format";
 import { useCustomers } from "@/components/customers/CustomersProvider";
 import { useToast } from "@/components/ui/Toast";
 
-/** Every change to a booking goes through here: it stamps `updated` and adds a history line. */
-function save(b: Booking, patch: Partial<Booking>, event?: string) {
-  const date = todayIso();
-  bookingStore.update({
-    ...b,
-    ...patch,
-    updated: date,
-    history: event ? [...b.history, { date, text: event }] : b.history,
-  }); // ← later: API call
-}
-
-/** The booking as just saved in this browser (used by toast buttons clicked a moment later). */
-function latestStored(id: string) {
-  const s = bookingStore.getSnapshot();
-  return s.edited[id] ?? s.added.find((b) => b.id === id);
-}
-
+/**
+ * Every booking change, saved to the database through Server Actions (src/lib/actions/bookings.ts).
+ * Each returns true when it worked; when the server refuses, the reason is shown in a message.
+ */
 export function useBookingActions() {
   const router = useRouter();
   const toast = useToast();
   const { bookings } = useBookings();
+  const { showSaved } = useBookingData();
   const { customers, getCustomer, openAddForm } = useCustomers();
-  const leads = useLeadList();
+  const { leads, updateLeadStatus } = useLeadData();
+
+  /** Shows the saved booking, or the server's reason when it refused. */
+  const apply = useCallback(
+    (result: server.BookingResult) => {
+      if (!result.ok) {
+        toast({ tone: "info", message: <p>{result.message}</p> });
+        return null;
+      }
+      showSaved(result.booking);
+      return result.booking;
+    },
+    [showSaved, toast],
+  );
 
   /** Moves the booking to its next status (if nothing blocks it). */
   const advance = useCallback(
-    (b: Booking) => {
-      const step = nextStep(b, todayIso());
-      if (!step || step.blocker) return;
-      save(b, { status: step.next }, STATUS_EVENT[step.next]);
-      toast({ message: <p>{b.id}: {STATUS_EVENT[step.next].toLowerCase()}.</p> });
+    async (b: Booking) => {
+      const saved = apply(await server.advanceBooking(b.dbId));
+      if (saved) toast({ message: <p>{b.id}: {STATUS_EVENT[saved.status].toLowerCase()}.</p> });
+      return Boolean(saved);
     },
-    [toast],
+    [apply, toast],
   );
 
   const cancel = useCallback(
-    (b: Booking, reason: string) => {
-      save(b, { status: "Cancelled", cancelReason: reason }, `Booking cancelled — ${reason}`);
-      toast({ tone: "info", message: <p>{b.id} was cancelled.</p> });
+    async (b: Booking, reason: string) => {
+      const saved = apply(await server.cancelBooking(b.dbId, reason));
+      if (saved) toast({ tone: "info", message: <p>{b.id} was cancelled.</p> });
+      return Boolean(saved);
     },
-    [toast],
+    [apply, toast],
   );
 
   const recordPayment = useCallback(
-    (b: Booking, v: PaymentFormValues) => {
+    async (b: Booking, v: PaymentFormValues) => {
+      const saved = apply(await server.recordPayment(b.dbId, v));
+      if (!saved) return false;
+      const { balance } = bookingMoney(saved);
       const amount = Math.round(Number(v.amount.replace(/[,\s$]/g, "")) * 100) / 100;
-      const nextId = `p${b.payments.reduce((m, p) => Math.max(m, Number(p.id.replace(/\D/g, "")) || 0), 0) + 1}`;
-      const payment: BookingPayment = { id: nextId, date: v.date, amount, method: v.method, note: v.note.trim() || undefined };
-      const updated: Booking = { ...b, payments: [...b.payments, payment] };
-      const { balance } = bookingMoney(updated);
-      save(b, { payments: updated.payments }, `Payment of ${formatMoney(amount)} received (${v.method})`);
       toast({
         message: (
           <p>
@@ -79,91 +74,129 @@ export function useBookingActions() {
           </p>
         ),
         // Deposit just arrived on a Pending booking → offer to confirm it right away.
-        action:
-          b.status === "Pending"
-            ? {
-                label: "Confirm booking",
-                onClick: () => {
-                  const latest = latestStored(b.id);
-                  if (latest) advance(latest);
-                },
-              }
-            : undefined,
+        action: saved.status === "Pending" ? { label: "Confirm booking", onClick: () => void advance(saved) } : undefined,
       });
+      return true;
     },
-    [toast, advance],
+    [apply, advance, toast],
   );
 
-  const removePayment = useCallback(
-    (b: Booking, paymentId: string) => {
-      const p = b.payments.find((x) => x.id === paymentId);
-      if (!p || !window.confirm(`Remove the ${formatMoney(p.amount)} payment from ${p.date}?`)) return;
-      save(b, { payments: b.payments.filter((x) => x.id !== paymentId) }, `Payment of ${formatMoney(p.amount)} removed`);
+  /** Finance / admin: corrects a recorded payment (reason required; logged in the audit log and the booking's history). */
+  const correctPayment = useCallback(
+    async (b: Booking, paymentDbId: string, v: PaymentCorrectionValues) => {
+      const saved = apply(await server.correctPayment(b.dbId, paymentDbId, v));
+      if (saved) toast({ message: <p>Payment corrected. The change and your reason are in the booking&apos;s history.</p> });
+      return Boolean(saved);
     },
-    [],
+    [apply, toast],
   );
 
-  /** Money returned to the customer (usually after a cancellation). */
-  const recordRefund = useCallback(
-    (b: Booking, v: { amount: string; date: string; method: BookingPayment["method"]; note: string }) => {
-      const amount = Math.round(Number(v.amount.replace(/[,\s$]/g, "")) * 100) / 100;
-      const nextId = `p${b.payments.reduce((m, p) => Math.max(m, Number(p.id.replace(/\D/g, "")) || 0), 0) + 1}`;
-      const refund: BookingPayment = { id: nextId, date: v.date, amount, method: v.method, note: v.note.trim() || undefined, kind: "refund" };
-      const payments = [...b.payments, refund];
-      const kept = bookingMoney({ ...b, payments }).paid;
-      // Anything not refunded is kept as a cancellation fee — the refund settles the case.
-      save(b, { payments, refundSettled: true }, `Refund of ${formatMoney(amount)} sent (${v.method})${kept > 0 ? ` — ${formatMoney(kept)} kept as fee` : ""}`);
-      toast({ message: <p>Refund of {formatMoney(amount)} to {b.customerName} recorded.</p> });
+  /* ── Refunds (migration 18): request → approve → pay, or reject / withdraw ── */
+  const money = (v: string) => formatMoney(Math.round(Number(v.replace(/[,s$]/g, "")) * 100) / 100);
+
+  const requestRefund = useCallback(
+    async (b: Booking, v: RecordRefundValues) => {
+      const saved = apply(await refunds.requestRefund(b.dbId, v));
+      if (saved) toast({ message: <p>Refund of {money(v.amount)} requested. Finance will review it.</p> });
+      return Boolean(saved);
     },
-    [toast],
+    [apply, toast],
+  );
+
+  /** Finance / admin: a refund already sent, recorded in one step (no separate approval — shown in the history). */
+  const recordPaidRefund = useCallback(
+    async (b: Booking, v: RecordRefundValues) => {
+      const saved = apply(await refunds.recordPaidRefund(b.dbId, v));
+      if (saved) toast({ message: <p>Refund of {money(v.amount)} to {b.customerName} recorded.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const approveRefund = useCallback(
+    async (b: Booking, r: RefundRequest, v: ApproveValues) => {
+      const saved = apply(await refunds.approveRefund(b.dbId, r.dbId, v));
+      if (saved) toast({ message: <p>{r.reference} approved for {money(v.amount)}. Mark it paid once the money is sent.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const rejectRefund = useCallback(
+    async (b: Booking, r: RefundRequest, reason: string) => {
+      const saved = apply(await refunds.rejectRefund(b.dbId, r.dbId, reason));
+      if (saved) toast({ tone: "info", message: <p>{r.reference} rejected.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const withdrawRefund = useCallback(
+    async (b: Booking, r: RefundRequest) => {
+      const saved = apply(await refunds.withdrawRefund(b.dbId, r.dbId));
+      if (saved) toast({ tone: "info", message: <p>Request {r.reference} withdrawn.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
+
+  const payRefund = useCallback(
+    async (b: Booking, r: RefundRequest, v: PayValues) => {
+      const saved = apply(await refunds.payRefund(b.dbId, r.dbId, v));
+      if (saved) toast({ message: <p>{r.reference}: {formatMoney(r.amount)} sent to {b.customerName}.</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
   );
 
   /** Cancelled booking: keep what was paid (non-refundable deposit / fee). */
   const keepAsFee = useCallback(
-    (b: Booking) => {
-      const { paid } = bookingMoney(b);
-      save(b, { refundSettled: true }, `No refund — ${formatMoney(paid)} kept as cancellation fee`);
-      toast({ tone: "info", message: <p>{formatMoney(paid)} from {b.id} kept as a cancellation fee.</p> });
+    async (b: Booking) => {
+      const saved = apply(await server.keepAsFee(b.dbId));
+      if (saved) toast({ tone: "info", message: <p>{formatMoney(bookingMoney(b).paid)} from {b.id} kept as a cancellation fee.</p> });
+      return Boolean(saved);
     },
-    [toast],
+    [apply, toast],
   );
 
-  /** Records that the agency paid the supplier for one service (with Undo). */
+  /** Records that the agency paid the supplier for one service; Undo records a reversing entry. */
   const markSupplierPaid = useCallback(
-    (b: Booking, serviceId: string, paid: boolean) => {
+    async (b: Booking, serviceId: string, paid: boolean) => {
       const service = b.services.find((s) => s.id === serviceId);
-      if (!service) return;
-      const date = todayIso();
-      save(
-        b,
-        { services: b.services.map((s) => (s.id === serviceId ? { ...s, supplierPaidOn: paid ? date : undefined } : s)) },
-        paid ? `Supplier paid for ${service.type.toLowerCase()} (${formatMoney(service.cost)})` : `Supplier payment for ${service.type.toLowerCase()} undone`,
-      );
+      if (!service?.dbId) return false;
+      const saved = apply(await server.markSupplierPaid(b.dbId, service.dbId, paid));
+      if (!saved) return false;
       if (paid)
         toast({
           message: <p>Marked {formatMoney(service.cost)} to the {service.type.toLowerCase()} supplier as paid.</p>,
-          action: {
-            label: "Undo",
-            onClick: () => {
-              const latest = latestStored(b.id);
-              if (latest) save(latest, { services: latest.services.map((s) => (s.id === serviceId ? { ...s, supplierPaidOn: undefined } : s)) }, `Supplier payment for ${service.type.toLowerCase()} undone`);
-            },
-          },
+          action: { label: "Undo", onClick: () => void server.markSupplierPaid(saved.dbId, service.dbId, false).then(apply) },
         });
+      else toast({ tone: "info", message: <p>Supplier payment for {service.type.toLowerCase()} reversed.</p> });
+      return true;
     },
-    [toast],
+    [apply, toast],
   );
 
-  const setServiceRef = useCallback((b: Booking, serviceId: string, ref: string) => {
-    const service = b.services.find((s) => s.id === serviceId);
-    const clean = ref.trim().toUpperCase();
-    if (!service || (service.ref ?? "") === clean) return;
-    save(
-      b,
-      { services: b.services.map((s) => (s.id === serviceId ? { ...s, ref: clean || undefined } : s)) },
-      clean ? `${service.type} confirmed — ref ${clean}` : `${service.type} reference removed`,
-    );
-  }, []);
+  const setServiceRef = useCallback(
+    async (b: Booking, serviceId: string, ref: string) => {
+      const service = b.services.find((s) => s.id === serviceId);
+      if (!service?.dbId || (service.ref ?? "") === ref.trim().toUpperCase()) return true;
+      return Boolean(apply(await server.setServiceRef(b.dbId, service.dbId, ref)));
+    },
+    [apply],
+  );
+
+  /** Links a service to a supplier from the directory (null removes the link). */
+  const setServiceSupplier = useCallback(
+    async (b: Booking, serviceId: string, supplierId: string | null) => {
+      const service = b.services.find((s) => s.id === serviceId);
+      if (!service?.dbId || (service.supplierId ?? null) === supplierId) return true;
+      const saved = apply(await server.setServiceSupplier(b.dbId, service.dbId, supplierId));
+      if (saved) toast({ message: <p>{supplierId ? "Supplier linked." : "Supplier removed."}</p> });
+      return Boolean(saved);
+    },
+    [apply, toast],
+  );
 
   /**
    * Accepted quotation → booking. A quote for a lead needs a customer first:
@@ -174,36 +207,43 @@ export function useBookingActions() {
       const existing = bookings.find((b) => b.quoteId === q.id);
       if (existing) return router.push(`/bookings/${existing.id}`);
 
-      const make = (customer: Customer) => {
-        const b = bookingFromQuote(q, customer, nextBookingId(bookings), todayIso());
-        bookingStore.add(b);
+      const make = async (customer: Customer) => {
+        if (!q.dbId) return;
+        const result = await server.createBookingFromQuote(q.dbId, customer.id);
+        if (!result.ok) {
+          toast({ tone: "info", message: <p>{result.message}</p> });
+          return;
+        }
+        showSaved(result.booking, true);
         toast({
           message: (
             <p>
-              Booking <span className="font-mono text-gold-300">{b.id}</span> created for {customer.name}. Next: record the deposit.
+              Booking <span className="font-mono text-gold-300">{result.booking.id}</span> created for {customer.name}. Next: record the
+              deposit.
             </p>
           ),
         });
-        router.push(`/bookings/${b.id}`);
+        router.push(`/bookings/${result.booking.id}`);
       };
 
       if (q.recipient.kind === "customer") {
         const c = getCustomer(q.recipient.id);
-        if (c) make(c);
+        if (c) void make(c);
+        else toast({ tone: "info", message: <p>Customer {q.recipient.id} isn&apos;t available to you.</p> });
         return;
       }
 
       const lead = leads.find((l) => l.id === q.recipient.id);
       const linked = lead?.customerId ? getCustomer(lead.customerId) : undefined;
-      if (linked) return make(linked);
+      if (linked) return void make(linked);
 
       const samePhone = customers.find((c) => compactPhone(c.phone) === compactPhone(q.recipient.phone));
       const linkLead = (customerId: string) => {
-        if (lead) leadStore.update({ ...lead, customerId, stage: "Won", nextFollowUp: undefined, lostReason: undefined, lastContact: todayIso() });
+        if (lead) void updateLeadStatus(lead, { customerCode: customerId, stage: "Won", nextFollowUp: null, lostReason: null });
       };
       if (samePhone) {
         linkLead(samePhone.id);
-        return make(samePhone);
+        return void make(samePhone);
       }
       openAddForm({
         context: `To book ${q.id}, first save ${q.recipient.name} as a customer — add their city & country.`,
@@ -211,19 +251,35 @@ export function useBookingActions() {
           ...splitName(q.recipient.name),
           phone: q.recipient.phone,
           email: q.recipient.email ?? "",
-          agent: q.agent,
+          agent: lead?.agentId ?? q.agentId ?? q.agent,
           favouriteDestination: q.destination,
           whatsappOptIn: lead?.source === "WhatsApp",
           notes: lead?.notes ?? "",
         },
         onSaved: (customer) => {
           linkLead(customer.id);
-          make(customer);
+          void make(customer);
         },
       });
     },
-    [bookings, customers, getCustomer, leads, openAddForm, router, toast],
+    [bookings, customers, getCustomer, leads, openAddForm, router, showSaved, toast, updateLeadStatus],
   );
 
-  return { advance, cancel, recordPayment, recordRefund, keepAsFee, markSupplierPaid, removePayment, setServiceRef, createFromQuote };
+  return {
+    advance,
+    cancel,
+    recordPayment,
+    correctPayment,
+    requestRefund,
+    recordPaidRefund,
+    approveRefund,
+    rejectRefund,
+    withdrawRefund,
+    payRefund,
+    keepAsFee,
+    markSupplierPaid,
+    setServiceRef,
+    setServiceSupplier,
+    createFromQuote,
+  };
 }

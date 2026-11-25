@@ -21,19 +21,4 @@ export const QUOTE_STATUS_TONE: Record<QuoteDisplayStatus, BadgeTone> = {
   Expired: "warning",
 };
 
-/** Days a new quotation stays valid by default. */
-export const DEFAULT_VALIDITY_DAYS = 14;
-
-/** Default tax/service charge % on new quotations (0 = none). */
-export const DEFAULT_TAX_RATE = 0;
-
-/** Margin below this % shows a warning in the builder. */
-export const LOW_MARGIN_PERCENT = 8;
-
-/** Printed at the bottom of every quotation. Edit to match your agency's terms. */
-export const QUOTE_TERMS = [
-  "Prices are per the items listed and subject to availability until booked.",
-  "A 30% deposit confirms the booking; the balance is due 30 days before departure.",
-  "Flight fares are only guaranteed once tickets are issued.",
-  "Cancellation charges apply as per supplier policies.",
-];
+// Validity, default tax, low-margin alert and terms are agency settings now: src/lib/settings-rules.ts (migration 20).

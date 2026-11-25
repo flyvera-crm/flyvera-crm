@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Quotation, QuoteDisplayStatus } from "@/types/crm";
-import { displayStatus, quoteStore, useQuotations } from "@/lib/quote-store";
+import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { fold } from "@/lib/customer-search";
 import { addDays } from "@/lib/dates";
@@ -38,7 +38,8 @@ function Stat({ label, value, hint, icon, gold }: { label: string; value: string
 }
 
 export function QuotationsList() {
-  const { quotes, today, addedIds, changedCount } = useQuotations();
+  const { quotes, today, addedIds } = useQuotations();
+  const { canEdit } = useQuoteData().access;
   const router = useRouter();
   const [tab, setTab] = useState<QuoteDisplayStatus | "All">("All");
   const [query, setQuery] = useState("");
@@ -65,10 +66,6 @@ export function QuotationsList() {
   const accepted = rows.filter((r) => r.status === "Accepted");
   const decided = accepted.length + (counts.Declined ?? 0);
   const expiringSoon = today ? open.filter((r) => r.q.validUntil <= addDays(today, 3)).length : 0;
-
-  function reset() {
-    if (window.confirm(`Undo ${changedCount} change(s) to quotations and restore the demo data?`)) quoteStore.clear();
-  }
 
   return (
     <div className="space-y-6">
@@ -130,10 +127,15 @@ export function QuotationsList() {
           <div className="flex flex-col items-center px-6 py-16 text-center">
             <Icon name="document" size={28} className="text-navy-300" />
             <p className="mt-3 font-semibold text-navy-900">No quotations here</p>
-            <p className="mt-1 text-sm text-navy-400">Try another tab or search — or create a new quotation.</p>
-            <Link href="/quotations/new" className="mt-5 rounded-xl bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">
-              New quotation
-            </Link>
+            <p className="mt-1 text-sm text-navy-400">
+              {quotes.length ? "Try another tab or search." : "No quotations yet."}
+              {canEdit && " Or create a new quotation."}
+            </p>
+            {canEdit && (
+              <Link href="/quotations/new" className="mt-5 rounded-xl bg-navy-900 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-800">
+                New quotation
+              </Link>
+            )}
           </div>
         ) : (
           <>
@@ -213,13 +215,6 @@ export function QuotationsList() {
               </table>
             </div>
           </>
-        )}
-        {changedCount > 0 && (
-          <div className="border-t border-navy-50 px-6 py-3 text-right text-sm">
-            <button onClick={reset} className="text-navy-400 hover:text-rose-600">
-              Reset demo data
-            </button>
-          </div>
         )}
       </Card>
     </div>

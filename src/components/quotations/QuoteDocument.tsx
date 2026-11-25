@@ -1,6 +1,10 @@
+"use client";
+
 import type { Quotation } from "@/types/crm";
-import { QUOTE_ITEM_TYPES, QUOTE_TERMS } from "@/config/quote-options";
-import { siteConfig } from "@/config/site";
+import { QUOTE_ITEM_TYPES } from "@/config/quote-options";
+import { useAgencySettings } from "@/lib/settings-store";
+import { letterhead } from "@/lib/settings-rules";
+import { Letterhead } from "@/components/documents/Letterhead";
 import { lineTotal, quoteTotals } from "@/lib/quote-math";
 import { Icon } from "@/components/icons";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -10,6 +14,8 @@ import { formatDate, formatMoney } from "@/lib/format";
  * Shows selling prices only (never your costs or margin).
  */
 export function QuoteDocument({ quote: q }: { quote: Quotation }) {
+  const settings = useAgencySettings();
+  const head = letterhead(settings.name, settings.profile);
   const t = quoteTotals(q.items, q.discount, q.taxRate);
   const nights = q.departDate && q.returnDate ? Math.round((Date.parse(q.returnDate) - Date.parse(q.departDate)) / 86_400_000) : null;
   const travellers = [
@@ -25,10 +31,7 @@ export function QuoteDocument({ quote: q }: { quote: Quotation }) {
       <header className="relative overflow-hidden bg-navy-900 px-6 py-6 text-white sm:px-10 sm:py-8 print:bg-navy-900">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_140%_at_100%_0%,rgba(14,165,233,0.3),transparent_60%)]" />
         <div className="relative flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-2xl font-bold tracking-[0.2em]">{siteConfig.name}</p>
-            <p className="text-xs font-medium uppercase tracking-wider text-gold-300">Travel quotation</p>
-          </div>
+          <Letterhead head={head} subtitle="Travel quotation" />
           <div className="sm:text-right">
             <p className="font-mono text-lg">{q.id}</p>
             <p className="text-sm text-navy-200">Issued {formatDate(q.sentAt ?? q.updated)}</p>
@@ -140,7 +143,7 @@ export function QuoteDocument({ quote: q }: { quote: Quotation }) {
           <div>
             <p className="mb-1.5 font-semibold uppercase tracking-wider text-navy-400">Terms</p>
             <ul className="list-disc space-y-1 pl-4">
-              {QUOTE_TERMS.map((term) => (
+              {settings.defaults.quoteTerms.map((term) => (
                 <li key={term}>{term}</li>
               ))}
             </ul>
@@ -148,7 +151,7 @@ export function QuoteDocument({ quote: q }: { quote: Quotation }) {
           <div className="sm:text-right">
             <p className="font-semibold uppercase tracking-wider text-navy-400">Your travel consultant</p>
             <p className="mt-1 text-sm font-semibold text-navy-900">{q.agent}</p>
-            <p>{siteConfig.product}</p>
+            <p>{settings.name}</p>
           </div>
         </footer>
       </div>

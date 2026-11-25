@@ -8,19 +8,27 @@ import { compactPhone } from "@/lib/customer-validation";
 import { Icon, type IconName } from "@/components/icons";
 import { cn, formatCurrency, formatDate, formatMoney } from "@/lib/format";
 import { FollowUpChip, PriorityBadge, SourceLabel, StageBadge } from "./lead-ui";
-import { displayStatus, useQuotations } from "@/lib/quote-store";
+import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
 import { QuoteStatusBadge } from "@/components/quotations/quote-actions";
+import { ArchiveButton } from "@/components/archive/ArchiveControls";
+import { LeadActivity } from "./LeadActivity";
+
+// Quotations come from the database (shared list), so the panel shows this lead's real quotations.
+const QUOTATIONS_CONNECTED = true;
 
 export function LeadDetails({
   lead,
   today,
+  canEdit,
   onEdit,
   onMove,
   onConvert,
 }: {
   lead: Lead;
   today: string | null;
+  /** false for support agents: they can read leads but not change them. */
+  canEdit: boolean;
   onEdit: () => void;
   onMove: (stage: LeadStage) => void;
   onConvert: () => void;
@@ -54,8 +62,8 @@ export function LeadDetails({
               <li key={s.value} className="flex-1">
                 <button
                   onClick={() => onMove(s.value)}
-                  disabled={current}
-                  title={current ? `Current stage: ${s.value}` : `Move to ${s.value}`}
+                  disabled={current || !canEdit}
+                  title={current ? `Current stage: ${s.value}` : canEdit ? `Move to ${s.value}` : s.value}
                   className="group w-full text-left disabled:cursor-default"
                 >
                   <span
@@ -89,6 +97,20 @@ export function LeadDetails({
       </section>
 
       {/* ── Primary actions ── */}
+      {!canEdit ? (
+        lead.customerId ? (
+          <Link
+            href={`/customers/${lead.customerId}`}
+            className="flex items-center justify-center gap-2 rounded-xl bg-gold-500 px-4 py-2.5 text-sm font-semibold text-navy-950 hover:bg-gold-400"
+          >
+            <Icon name="users" size={16} /> View customer {lead.customerId}
+          </Link>
+        ) : (
+          <p className="rounded-xl bg-navy-50 px-3.5 py-2.5 text-sm text-navy-500">
+            You can read this lead. Its assigned agent or an admin can update it.
+          </p>
+        )
+      ) : (
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {isLost ? (
           <ActionButton primary icon="arrowRight" onClick={() => onMove("Contacted")}>
@@ -125,10 +147,18 @@ export function LeadDetails({
             Mark as lost
           </ActionButton>
         )}
+        {lead.dbId && <ArchiveButton kind="lead" dbId={lead.dbId} name={lead.name} className="sm:col-span-2" />}
       </div>
+      )}
 
       {/* ── Quotations for this lead ── */}
-      <LeadQuotes lead={lead} today={today} />
+      {QUOTATIONS_CONNECTED ? (
+        <LeadQuotes lead={lead} today={today} />
+      ) : (
+        <Section title="Quotations">
+          <p className="text-sm text-navy-400">Quotations for this lead will appear here once the Quotations module is connected.</p>
+        </Section>
+      )}
 
       {/* ── Contact ── */}
       <Section title="Contact">
@@ -184,6 +214,13 @@ export function LeadDetails({
         </dl>
       </Section>
 
+      {/* ── Activity log (calls, messages, meetings, notes, stage changes) ── */}
+      {lead.dbId && (
+        <Section title="Activity">
+          <LeadActivity key={lead.dbId} leadDbId={lead.dbId} today={today} />
+        </Section>
+      )}
+
       {lead.notes && (
         <Section title="Notes">
           <p className="whitespace-pre-line rounded-xl border-l-4 border-gold-500 bg-gold-50/60 px-4 py-3 text-sm leading-relaxed text-navy-700">
@@ -197,14 +234,16 @@ export function LeadDetails({
 
 function LeadQuotes({ lead, today }: { lead: Lead; today: string | null }) {
   const { quotes } = useQuotations();
+  const { access } = useQuoteData();
   const mine = quotes.filter(
     (q) => (q.recipient.kind === "lead" && q.recipient.id === lead.id) || (lead.customerId && q.recipient.id === lead.customerId),
   );
+  if (!access.canView) return null; // support agents don't see quotations
   return (
     <Section
       title={`Quotations${mine.length ? ` (${mine.length})` : ""}`}
       action={
-        lead.stage !== "Lost" && (
+        access.canEdit && lead.stage !== "Lost" && (
           <Link
             href={`/quotations/new?lead=${lead.id}`}
             className="inline-flex items-center gap-1 text-sm font-semibold text-sky-brand-dark hover:text-navy-900"

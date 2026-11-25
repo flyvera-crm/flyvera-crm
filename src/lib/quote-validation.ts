@@ -1,12 +1,14 @@
-// Pure validation + conversion for the quotation builder (no React / browser APIs),
-// so the same rules can later run on a server.
-import type { QuoteItem, QuoteItemType, QuoteRecipient, Quotation } from "@/types/crm";
+// Pure validation + conversion for the quotation builder (no React / browser APIs).
+// The same rules run in the browser and in the Server Action (src/lib/actions/quotations.ts).
+import type { QuoteItemType, Quotation } from "@/types/crm";
 import { addDays } from "@/lib/customer-history";
-import { DEFAULT_TAX_RATE, DEFAULT_VALIDITY_DAYS } from "@/config/quote-options";
+import { BUILT_IN_DEFAULTS, type AgencyDefaults } from "@/lib/settings-rules";
 import { lineTotal } from "@/lib/quote-math";
 
 export type QuoteItemDraft = {
   id: string;
+  /** Set for lines already saved in the database, so edits update them instead of adding new ones. */
+  dbId?: string;
   type: QuoteItemType;
   description: string;
   quantity: string; // text while typing
@@ -26,7 +28,7 @@ export type QuoteFormValues = {
   discount: string;
   taxRate: string;
   validUntil: string;
-  agent: string;
+  agent: string; // the preparing agent's user id
   notes: string;
 };
 
@@ -47,7 +49,11 @@ export function newItem(id: string, type: QuoteItemType = "Flight", description 
   return { id, type, description, quantity, unitPrice: "", cost: "" };
 }
 
-export function emptyQuoteForm(today: string): QuoteFormValues {
+/** A blank quotation; tax and validity come from the agency settings. */
+export function emptyQuoteForm(
+  today: string,
+  defaults: Pick<AgencyDefaults, "defaultTaxRate" | "quoteValidityDays"> = BUILT_IN_DEFAULTS,
+): QuoteFormValues {
   return {
     recipient: "",
     title: "",
@@ -58,8 +64,8 @@ export function emptyQuoteForm(today: string): QuoteFormValues {
     children: "0",
     items: [newItem("i1")],
     discount: "",
-    taxRate: String(DEFAULT_TAX_RATE),
-    validUntil: addDays(today, DEFAULT_VALIDITY_DAYS),
+    taxRate: String(defaults.defaultTaxRate),
+    validUntil: addDays(today, defaults.quoteValidityDays),
     agent: "",
     notes: "",
   };
@@ -126,42 +132,6 @@ export function validateQuote(values: QuoteFormValues, today: string) {
   return { errors, warnings };
 }
 
-const tidy = (s: string) => s.trim().replace(/\s+/g, " ");
-
-/** Builds a Quotation from valid form values. */
-export function toQuotation(
-  values: QuoteFormValues,
-  recipient: QuoteRecipient,
-  base: Pick<Quotation, "id" | "created" | "status"> & Partial<Quotation>,
-  today: string,
-): Quotation {
-  const items: QuoteItem[] = values.items.map((i) => ({
-    id: i.id,
-    type: i.type,
-    description: tidy(i.description),
-    quantity: parseAmount(i.quantity),
-    unitPrice: parseAmount(i.unitPrice),
-    cost: i.cost.trim() ? parseAmount(i.cost) : 0,
-  }));
-  return {
-    ...base,
-    recipient,
-    title: tidy(values.title),
-    destination: tidy(values.destination),
-    departDate: values.departDate || undefined,
-    returnDate: values.returnDate || undefined,
-    adults: Number(values.adults),
-    children: Number(values.children || "0"),
-    items,
-    discount: values.discount.trim() ? parseAmount(values.discount) : 0,
-    taxRate: parseAmount(values.taxRate || "0"),
-    validUntil: values.validUntil,
-    agent: values.agent,
-    notes: tidy(values.notes) ? values.notes.trim() : undefined,
-    updated: today,
-  };
-}
-
 export function quoteToForm(q: Quotation): QuoteFormValues {
   return {
     recipient: `${q.recipient.kind}:${q.recipient.id}`,
@@ -173,6 +143,7 @@ export function quoteToForm(q: Quotation): QuoteFormValues {
     children: String(q.children),
     items: q.items.map((i) => ({
       id: i.id,
+      dbId: i.dbId,
       type: i.type,
       description: i.description,
       quantity: String(i.quantity),
@@ -182,15 +153,14 @@ export function quoteToForm(q: Quotation): QuoteFormValues {
     discount: q.discount ? String(q.discount) : "",
     taxRate: String(q.taxRate),
     validUntil: q.validUntil,
-    agent: q.agent,
+    agent: q.agentId ?? "",
     notes: q.notes ?? "",
   };
 }
 
-/** QT-3008 → QT-3009 */
-export function nextQuoteId(existing: Pick<Quotation, "id">[]) {
-  const max = existing.reduce((m, q) => Math.max(m, Number(q.id.replace(/\D/g, "")) || 0), 3000);
-  return `QT-${max + 1}`;
+/** "Valid until" for a fresh copy of a quotation: the agency's validity period from today (used by Duplicate). */
+export function freshValidity(today: string, days = BUILT_IN_DEFAULTS.quoteValidityDays) {
+  return addDays(today, days);
 }
 
 /** Next free line-item id within a quotation ("i5" after i1…i4). */

@@ -28,7 +28,12 @@ export type Lead = {
   nextFollowUp?: string; // ISO
   notes?: string;
   lostReason?: string;
-  customerId?: string; // set once converted to a customer
+  customerId?: string; // customer code (CU-…), set once converted to a customer
+  // Set for leads loaded from the database:
+  /** Database row id. The readable code (LD-2001) is `id`. */
+  dbId?: string;
+  /** User id of the assigned agent; `agent` holds their display name. */
+  agentId?: string;
 };
 export type FlightStatus = "On time" | "Delayed" | "Boarding" | "Scheduled";
 
@@ -36,27 +41,37 @@ export type Kpi = {
   label: string;
   value: number;
   format: "currency" | "number" | "percent";
-  delta: number; // % change vs previous period
+  delta: number | null; // % change vs previous period; null when there's nothing to compare with
   period: string;
-  icon: "wallet" | "calendar" | "target" | "users";
+  icon: "wallet" | "calendar" | "target" | "users" | "card" | "plane" | "clock" | "chart";
   trend: number[];
+  /** Higher is better (green when up). false for things like "overdue". Default true. */
+  upIsGood?: boolean;
 };
 
 export type PaymentMethod = "Card" | "Bank transfer" | "Cash" | "Other";
 
 export type BookingPayment = {
-  id: string; // "p1", "p2"…
+  id: string; // "p1", "p2"… for payments, "r1", "r2"… for refunds (the database's sequence numbers)
   date: string; // ISO
   amount: number; // always positive; refunds are marked with kind
   method: PaymentMethod;
   note?: string;
   kind?: "payment" | "refund"; // default "payment"
+  // Set for payments loaded from the database:
+  dbId?: string;
+  reference?: string;
+  /** true when Finance has corrected this payment since it was recorded (see the booking's history). */
+  corrected?: boolean;
 };
 
 /** A booked service = a quotation line + the supplier's reference once confirmed. */
 export type BookingService = QuoteItem & {
   ref?: string; // airline PNR, hotel confirmation number, etc.
   supplierPaidOn?: string; // ISO date the agency paid the supplier for this service
+  /** The supplier from the directory (database bookings; absent for roles that can't see suppliers). */
+  supplierId?: string;
+  supplierName?: string;
 };
 
 export type BookingEvent = { date: string; text: string };
@@ -87,6 +102,43 @@ export type Booking = {
   cancelReason?: string;
   refundSettled?: boolean; // cancelled: money kept as a fee (no further refund due)
   history: BookingEvent[]; // newest last
+  // Set for bookings loaded from the database:
+  /** Database row id. The readable code (FV-10001) is `id`. */
+  dbId?: string;
+  /** User id of the booking's agent; `agent` holds their display name. */
+  agentId?: string;
+  /** true for roles that may not see prices or payments (support): money figures are blank, not zero. */
+  moneyHidden?: boolean;
+  /**
+   * Passengers and how many hold an issued ticket (database bookings). `visible` is false for
+   * roles that can't see passengers or tickets — they can't complete the ticketing step.
+   */
+  ticketing?: { visible: boolean; passengers: number; ticketedPassengers: number };
+  /** Refund requests on this booking, newest last (migration 18). */
+  refundRequests?: RefundRequest[];
+};
+
+export type RefundRequestStatus = "Requested" | "Approved" | "Paid" | "Rejected" | "Withdrawn";
+export type RefundCategory = "Cancellation" | "Airline refund" | "Schedule change" | "Duplicate payment" | "Other";
+
+export type RefundRequest = {
+  dbId: string;
+  reference: string; // RF-10477-1
+  status: RefundRequestStatus;
+  amount: number; // approved / paid amount (may be less than requested)
+  requestedAmount: number;
+  method: PaymentMethod;
+  category?: RefundCategory;
+  details?: string;
+  requestedById?: string;
+  requestedByName: string;
+  requestedOn: string; // ISO date
+  decisionNote?: string;
+  decidedByName?: string;
+  paidOn?: string;
+  paymentReference?: string;
+  /** Recorded by Finance in one step (money already sent) — no separate approval. */
+  recordedDirectly: boolean;
 };
 
 export type Flight = {
@@ -139,6 +191,22 @@ export type Customer = {
   seatPreference?: SeatPreference;
   whatsappOptIn?: boolean;
   notes?: string;
+  // Set for customers loaded from the database (not for demo data):
+  /** Database row id. The readable code (CU-1001) is `id`. */
+  dbId?: string;
+  /** User id of the assigned agent; `agent` holds their display name. */
+  agentId?: string;
+  /** Stored passport. The number is encrypted: only its last 4 characters are loaded. */
+  passport?: StoredPassport;
+  /** true when this user's role may not see trip and money figures. */
+  statsHidden?: boolean;
+};
+
+export type StoredPassport = {
+  documentId: string;
+  last4: string;
+  expiry: string; // ISO date
+  issuingCountry: string;
 };
 
 export type QuoteStatus = "Draft" | "Sent" | "Accepted" | "Declined";
@@ -153,6 +221,8 @@ export type QuoteItem = {
   quantity: number;
   unitPrice: number; // selling price per unit (what the customer pays)
   cost: number; // total supplier cost for this line (internal only)
+  /** Database row id (quotation lines loaded from the database). `id` is a short local key like "i1". */
+  dbId?: string;
 };
 
 export type QuoteRecipient = {
@@ -183,6 +253,11 @@ export type Quotation = {
   updated: string;
   sentAt?: string;
   respondedAt?: string;
+  // Set for quotations loaded from the database:
+  /** Database row id. The readable code (QT-3001) is `id`. */
+  dbId?: string;
+  /** User id of the agent who prepared it; `agent` holds their display name. */
+  agentId?: string;
 };
 
 export type MonthlyRevenue = { month: string; revenue: number };

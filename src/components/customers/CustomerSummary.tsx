@@ -32,21 +32,28 @@ export function CustomerSummary() {
   const vip = customers.filter((c) => c.tier === "Platinum" || c.tier === "Gold").length;
   const travelling = customers.filter((c) => c.status === "Travelling").length;
   const totalValue = customers.reduce((sum, c) => sum + c.lifetimeValue, 0);
+  const statsHidden = customers.some((c) => c.statsHidden);
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <Summary
         label="Total customers"
         value={String(customers.length)}
-        hint={addedIds.size ? `Including ${addedIds.size} added by you` : "All traveller profiles"}
+        hint={addedIds.size ? `Including ${addedIds.size} added just now` : "Traveller profiles you can see"}
         icon="users"
       />
       <Summary label="VIP customers" value={String(vip)} hint="Platinum & Gold tiers" icon="crown" gold />
       <Summary label="Travelling now" value={String(travelling)} hint="Currently on a trip" icon="plane" />
       <Summary
         label="Lifetime value"
-        value={formatCurrency(totalValue, { compact: true })}
-        hint={`Avg ${formatCurrency(totalValue / customers.length)} per customer`}
+        value={statsHidden ? "—" : formatCurrency(totalValue, { compact: true })}
+        hint={
+          statsHidden
+            ? "Not shown for your role"
+            : customers.length
+              ? `Avg ${formatCurrency(totalValue / customers.length)} per customer`
+              : "No customers yet"
+        }
         icon="wallet"
       />
     </div>

@@ -1,5 +1,5 @@
-// Pure validation for the lead form (no React / browser APIs) —
-// the same rules can later run inside a Server Action.
+// Pure validation for the lead form (no React / browser APIs). The same rules run
+// in the browser and in the Server Action (src/lib/actions/leads.ts) before saving.
 import type { Customer, Lead, LeadPriority, LeadSource, LeadStage, TripType } from "@/types/crm";
 import { compactPhone } from "@/lib/customer-validation";
 
@@ -16,7 +16,7 @@ export type LeadFormValues = {
   budget: string;
   stage: LeadStage;
   priority: LeadPriority;
-  agent: string;
+  agent: string; // the assigned agent's user id
   nextFollowUp: string;
   notes: string;
 };
@@ -107,29 +107,10 @@ export function validateLead(values: LeadFormValues, otherLeads: Lead[], custome
 }
 
 const tidy = (s: string) => s.trim().replace(/\s+/g, " ");
-const optional = (s: string) => tidy(s) || undefined;
 
-/** Builds a Lead from valid form values. `base` keeps fields the form doesn't edit. */
-export function toLead(values: LeadFormValues, base: Pick<Lead, "id" | "created" | "lastContact"> & Partial<Lead>): Lead {
-  return {
-    ...base,
-    name: tidy(values.name),
-    phone: tidy(values.phone),
-    email: optional(values.email.toLowerCase()),
-    source: values.source,
-    stage: values.stage,
-    priority: values.priority,
-    destination: tidy(values.destination),
-    tripType: values.tripType,
-    departDate: optional(values.departDate),
-    returnDate: optional(values.returnDate),
-    travellers: Number(values.travellers),
-    budget: values.budget.trim() ? Math.round(Number(values.budget.replace(/[,\s]/g, ""))) : 0,
-    agent: values.agent,
-    nextFollowUp: optional(values.nextFollowUp),
-    notes: optional(values.notes),
-    lostReason: values.stage === "Lost" ? base.lostReason : undefined,
-  };
+/** The budget field as a number (commas and spaces allowed while typing); 0 when empty. */
+export function parseBudget(text: string) {
+  return text.trim() ? Math.round(Number(text.replace(/[,\s]/g, ""))) : 0;
 }
 
 export function leadToFormValues(l: Lead): LeadFormValues {
@@ -146,16 +127,10 @@ export function leadToFormValues(l: Lead): LeadFormValues {
     budget: l.budget ? String(l.budget) : "",
     stage: l.stage,
     priority: l.priority,
-    agent: l.agent,
+    agent: l.agentId ?? "",
     nextFollowUp: l.nextFollowUp ?? "",
     notes: l.notes ?? "",
   };
-}
-
-/** LD-2061 → LD-2062 */
-export function nextLeadId(existing: Lead[]) {
-  const max = existing.reduce((m, l) => Math.max(m, Number(l.id.replace(/\D/g, "")) || 0), 2000);
-  return `LD-${max + 1}`;
 }
 
 /** Splits "Nour Al Haddad" → { firstName: "Nour", lastName: "Al Haddad" } for the customer form. */
