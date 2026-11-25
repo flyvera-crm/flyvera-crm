@@ -165,7 +165,13 @@ select vault.create_secret('<long random value>', 'flyvera_document_key', 'Passp
 Store the value in the password manager. **Losing it makes stored passport numbers unreadable.**
 
 ## 5. The agency and the first admin
-The app can't create an agency or its first admin (there is no public sign-up). In the **SQL editor**:
+The app can't create an agency or its first admin (there is no public sign-up).
+
+**Primary admin and contact email: `louispeterlouis00@gmail.com`** — the owner's login for the first admin account and the
+owner's contact address. It is **not** the transactional sender: invitation and password emails are sent from
+the SMTP mailbox in section 2 (e.g. `noreply@flyvera.us`) and are received at this address.
+
+In the **SQL editor**:
 ```sql
 -- 1. The agency (slug: lowercase letters, digits, dashes)
 insert into public.organizations (name, slug, base_currency, timezone)
@@ -174,9 +180,9 @@ returning id;
 
 -- 2. An admin invitation for the owner (use the id returned above; email in lowercase)
 insert into public.organization_invitations (organization_id, email, full_name, role)
-values ('<organization id>', '<owner email>', '<Owner Name>', 'admin');
+values ('<organization id>', 'louispeterlouis00@gmail.com', '<Owner Name>', 'admin');
 ```
-3. **Authentication → Users → Add user:** the owner's email and a strong password, **"Auto Confirm User" on**.
+3. **Authentication → Users → Add user:** `louispeterlouis00@gmail.com` and a strong password, **"Auto Confirm User" on**.
    The database grants admin access when a confirmed login matches a valid invitation.
 4. Check:
    ```sql
