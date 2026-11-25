@@ -40,14 +40,32 @@ Use the **production** project's values here — never staging's, and never uplo
 (it holds staging values).
 
 ### Step 1 — "before" DNS snapshot (read-only)
-In PowerShell, and save the output:
+In PowerShell (read-only lookups), and save the output with the date:
 ```
-foreach ($t in "NS","A","MX","TXT") { nslookup -type=$t flyvera.us 1.1.1.1 }
-nslookup crm.flyvera.us 1.1.1.1
+foreach ($t in "NS","SOA","A","AAAA","MX","TXT") { Resolve-DnsName flyvera.us -Type $t -Server cosmos.dns-parking.com -DnsOnly }
+Resolve-DnsName www.flyvera.us -Type CNAME -Server cosmos.dns-parking.com -DnsOnly
+Resolve-DnsName _dmarc.flyvera.us -Type TXT -Server cosmos.dns-parking.com -DnsOnly
+Resolve-DnsName autoconfig.flyvera.us -Type CNAME -Server cosmos.dns-parking.com -DnsOnly
+Resolve-DnsName autodiscover.flyvera.us -Type CNAME -Server cosmos.dns-parking.com -DnsOnly
+Resolve-DnsName crm.flyvera.us -Type A -Server cosmos.dns-parking.com -DnsOnly
 ```
-Expected today (25 Nov 2026): nameservers `cosmos.dns-parking.com` / `nova.dns-parking.com` (Hostinger);
-A `88.222.222.5`, `84.32.84.169`; MX `mx1.hostinger.com` (5), `mx2.hostinger.com` (10);
-TXT `v=spf1 include:_spf.mail.hostinger.com ~all`; `crm.flyvera.us` → *Non-existent domain*.
+(`cosmos.dns-parking.com` is Hostinger's nameserver, so the answers aren't cached. Windows can't look up CAA
+records; check them with `https://cloudflare-dns.com/dns-query?name=flyvera.us&type=CAA` and the header
+`accept: application/dns-json`.)
+
+Snapshot taken 25 Nov 2026:
+| Record | Value | After go-live |
+|---|---|---|
+| NS | `cosmos.dns-parking.com`, `nova.dns-parking.com` (Hostinger) | **identical** |
+| MX | `5 mx1.hostinger.com`, `10 mx2.hostinger.com` | **identical** |
+| TXT (SPF) | `v=spf1 include:_spf.mail.hostinger.com ~all` | **identical** |
+| `_dmarc` TXT | `v=DMARC1; p=none` | **identical** |
+| `www` CNAME | `www.flyvera.us.cdn.hstgr.net` | **identical** |
+| `autoconfig` / `autodiscover` CNAME | `autoconfig.mail.hostinger.com` / `autodiscover.mail.hostinger.com` | **identical** |
+| CAA | none (so nothing blocks the SSL certificate for `crm`) | **still none** |
+| A / AAAA (website) | Hostinger CDN addresses that **change on almost every lookup** (e.g. `145.79.24.x`, `145.79.29.x`) | **not compared** — check that `https://flyvera.us` loads instead |
+| SOA serial | `2026111901` | **increases** — normal, any DNS edit bumps it |
+| `crm.flyvera.us` | *does not exist* | **exists** — the only new name |
 
 ### Step 2 — a `production` branch
 Hostinger redeploys automatically on every push to the connected branch, so connect a dedicated
@@ -94,10 +112,16 @@ git push -u origin production
       `X-Frame-Options: DENY`, `Strict-Transport-Security`, `Content-Security-Policy`.
 
 ### Step 5 — "after" DNS check
-Run the same commands as step 1. Everything for `flyvera.us` (NS, A, MX, TXT) must be **identical**; the only
-difference allowed is that `crm.flyvera.us` now resolves. Also open `https://flyvera.us` and send/receive
-one test email on a `@flyvera.us` mailbox. If anything for `flyvera.us` changed, stop and restore the
-recorded values in hPanel → Domains → DNS / Nameservers.
+Run the same lookups as step 1 and compare with the snapshot table:
+- [ ] Every row marked **identical** (NS, MX, SPF, `_dmarc`, `www`, `autoconfig`/`autodiscover`) matches exactly,
+      and there are still no CAA records.
+- [ ] `crm.flyvera.us` now resolves — the only new name. A higher SOA serial is expected.
+- [ ] The website addresses (A/AAAA) are **not** compared — they rotate through Hostinger's CDN. Instead,
+      `https://flyvera.us` and `https://www.flyvera.us` load as before.
+- [ ] Send and receive one test email on a `@flyvera.us` mailbox.
+
+If any **identical** row changed, or `flyvera.us` doesn't load, stop and restore the recorded values in
+hPanel → Domains → DNS / Nameservers.
 
 ### Hostinger limits to keep in mind
 | Limit | What it means for the CRM |
