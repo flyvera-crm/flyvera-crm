@@ -21,6 +21,7 @@ import {
   type QuoteMessages,
 } from "@/lib/quote-validation";
 import { QUOTE_ITEM_TYPES } from "@/config/quote-options";
+import { confirmQuoteStatus, planStatusChange, QUOTE_CHANGED_MESSAGE } from "@/lib/quote-status";
 
 export type SaveQuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string; fieldErrors?: QuoteMessages };
 export type QuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string };
@@ -80,9 +81,11 @@ export async function saveQuote(target: { dbId?: string }, raw: unknown): Promis
     prepared_by: values.agent,
   };
 
+  // An edit only applies while the quotation is still Draft or Sent (it may have been answered meanwhile).
   const saved = editing
-    ? await supabase.from("quotations").update(row).eq("id", existing!.id).select("id").maybeSingle()
+    ? await supabase.from("quotations").update(row).eq("id", existing!.id).in("status", ["Draft", "Sent"]).select("id").maybeSingle()
     : await supabase.from("quotations").insert({ ...row, organization_id: orgId, status: "Draft" }).select("id").maybeSingle();
+  if (editing && !saved.error && !saved.data) return { ok: false, message: QUOTE_CHANGED_MESSAGE };
   if (saved.error || !saved.data) return { ok: false, ...failure(saved.error, "save this quotation") };
   const quoteId = saved.data.id as string;
 
@@ -148,13 +151,6 @@ async function saveItems(supabase: SupabaseClient, orgId: string, quoteId: strin
 
 /* ─────────────────────────── status & duplicate ─────────────────────────── */
 
-const NEXT_STATUS: Record<QuoteStatus, QuoteStatus[]> = {
-  Draft: ["Sent", "Accepted", "Declined"],
-  Sent: ["Sent", "Accepted", "Declined"], // "Sent" again = re-sent (e.g. after editing)
-  Accepted: [],
-  Declined: [],
-};
-
 export async function setQuoteStatus(dbId: unknown, status: unknown): Promise<QuoteResult> {
   if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return { ok: false, message: "That quotation couldn't be found." };
   if (status !== "Sent" && status !== "Accepted" && status !== "Declined") return { ok: false, message: "That status isn't valid." };
@@ -167,22 +163,25 @@ export async function setQuoteStatus(dbId: unknown, status: unknown): Promise<Qu
     .is("deleted_at", null)
     .maybeSingle<{ id: string; status: QuoteStatus; sent_at: string | null }>();
   if (!current) return { ok: false, message: "This quotation no longer exists, or you can't change it." };
-  if (!NEXT_STATUS[current.status].includes(status))
-    return { ok: false, message: `A ${current.status.toLowerCase()} quotation can't be marked ${status.toLowerCase()}.` };
+  const plan = planStatusChange(current, status, new Date().toISOString());
+  if (!plan.ok) return plan;
 
-  const now = new Date().toISOString();
-  const update: Record<string, unknown> = { status };
-  if (status === "Sent") update.sent_at = now;
-  else {
-    update.responded_at = now;
-    if (!current.sent_at) update.sent_at = now; // answered without being marked sent first
-  }
-
-  const { error } = await supabase.from("quotations").update(update).eq("id", dbId);
+  // Applies only if the status is still the one checked above, and must report the changed row:
+  // a refused or overtaken update changes nothing and is never reported as saved.
+  const { data: changed, error } = await supabase
+    .from("quotations")
+    .update(plan.update)
+    .eq("id", dbId)
+    .eq("status", current.status)
+    .select("id")
+    .maybeSingle();
   if (error) return { ok: false, message: failure(error, "change this quotation").message };
+  if (!changed) return { ok: false, message: QUOTE_CHANGED_MESSAGE };
   const quote = await loadQuote(supabase, dbId);
   refresh();
-  return quote ? { ok: true, quote } : { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." };
+  return quote
+    ? confirmQuoteStatus({ ok: true, quote }, status)
+    : { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." };
 }
 
 /** Copies a quotation (and its items) into a new Draft that's valid from today. */

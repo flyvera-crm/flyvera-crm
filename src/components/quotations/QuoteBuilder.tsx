@@ -21,6 +21,7 @@ import {
 import { lineTotal, quoteTotals } from "@/lib/quote-math";
 import { useQuoteData } from "@/lib/quote-store";
 import { saveQuote } from "@/lib/actions/quotations";
+import { callAction } from "@/lib/action-call";
 import { Card } from "@/components/ui/Card";
 import { Field, fieldA11y, inputClass } from "@/components/ui/form";
 import { useToast } from "@/components/ui/Toast";
@@ -180,11 +181,13 @@ export function QuoteBuilder({
       return;
     }
     startSaving(async () => {
-      const result = await saveQuote({ dbId: existing?.dbId }, values);
+      // A failed request becomes a message: the form and everything typed in it stay on screen.
+      const result = await callAction(() => saveQuote({ dbId: existing?.dbId }, values), "Quotation save");
       if (!result.ok) {
-        setServerErrors(result.fieldErrors ?? {});
+        const fieldErrors = "fieldErrors" in result ? result.fieldErrors : undefined;
+        setServerErrors(fieldErrors ?? {});
         setServerMessage(result.message);
-        if (result.fieldErrors) focusFirst(result.fieldErrors);
+        if (fieldErrors) focusFirst(fieldErrors);
         return;
       }
       setDirty(false);

@@ -11,6 +11,8 @@ import { useQuoteData } from "@/lib/quote-store";
 import { duplicateQuote, setQuoteStatus } from "@/lib/actions/quotations";
 import { formatDate, formatMoney } from "@/lib/format";
 import { quoteTotals } from "@/lib/quote-math";
+import { callAction } from "@/lib/action-call";
+import { confirmQuoteStatus } from "@/lib/quote-status";
 
 export function QuoteStatusBadge({ status }: { status: QuoteDisplayStatus }) {
   return <Badge tone={QUOTE_STATUS_TONE[status]}>{status}</Badge>;
@@ -46,8 +48,10 @@ export function useQuoteActions() {
   /** Saves a status; shows the reason and returns null when the server refuses. */
   const changeStatus = useCallback(
     async (q: Quotation, status: "Sent" | "Accepted" | "Declined") => {
-      if (!q.dbId) return null;
-      const result = await setQuoteStatus(q.dbId, status);
+      const dbId = q.dbId;
+      if (!dbId) return null;
+      // A failed request becomes a message (never a crash), and a "success" without the new status isn't one.
+      const result = confirmQuoteStatus(await callAction(() => setQuoteStatus(dbId, status), "Quotation status change"), status);
       if (!result.ok) {
         toast({ tone: "info", message: <p>{result.message}</p> });
         return null;
@@ -62,13 +66,15 @@ export function useQuoteActions() {
     async (q: Quotation) => {
       if (!(await changeStatus(q, "Sent"))) return;
       const lead = leadFor(q);
-      const moved = lead && (lead.stage === "New" || lead.stage === "Contacted");
-      if (moved) void updateLeadStatus(lead, { stage: "Quoted" });
+      const move = lead && (lead.stage === "New" || lead.stage === "Contacted");
+      // The lead message reflects what was actually saved.
+      const leadResult = move ? await updateLeadStatus(lead, { stage: "Quoted" }) : null;
       toast({
         message: (
           <p>
             <span className="font-mono text-gold-300">{q.id}</span> marked as sent.
-            {moved && <> Lead {lead.name} moved to <span className="font-semibold">Quoted</span>.</>}
+            {lead && leadResult?.ok && <> Lead {lead.name} moved to <span className="font-semibold">Quoted</span>.</>}
+            {leadResult && !leadResult.ok && <> The lead wasn&apos;t moved to Quoted: {leadResult.message}</>}
           </p>
         ),
       });
@@ -80,13 +86,15 @@ export function useQuoteActions() {
     async (q: Quotation) => {
       if (!(await changeStatus(q, "Accepted"))) return;
       const lead = leadFor(q);
-      const won = lead && lead.stage !== "Won";
-      if (won) void updateLeadStatus(lead, { stage: "Won", lostReason: null, nextFollowUp: null });
+      const win = lead && lead.stage !== "Won";
+      // The lead message reflects what was actually saved.
+      const leadResult = win ? await updateLeadStatus(lead, { stage: "Won", lostReason: null, nextFollowUp: null }) : null;
       toast({
         message: (
           <p>
             🎉 <span className="font-semibold">{q.recipient.name}</span> accepted {q.id}.
-            {won && <> Lead moved to <span className="font-semibold">Won</span>.</>}
+            {leadResult?.ok && <> Lead moved to <span className="font-semibold">Won</span>.</>}
+            {leadResult && !leadResult.ok && <> The lead wasn&apos;t moved to Won: {leadResult.message}</>}
           </p>
         ),
         action:
@@ -118,8 +126,9 @@ export function useQuoteActions() {
   /** Copies a quotation into a new draft and opens it for editing. */
   const duplicate = useCallback(
     async (q: Quotation) => {
-      if (!q.dbId) return;
-      const result = await duplicateQuote(q.dbId);
+      const dbId = q.dbId;
+      if (!dbId) return;
+      const result = await callAction(() => duplicateQuote(dbId), "Quotation duplicate");
       if (!result.ok) {
         toast({ tone: "info", message: <p>{result.message}</p> });
         return;

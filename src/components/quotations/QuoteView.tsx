@@ -4,6 +4,7 @@ import { useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { invoiceFromQuote } from "@/lib/actions/invoices";
+import { callAction } from "@/lib/action-call";
 import { useToast } from "@/components/ui/Toast";
 import { displayStatus, useQuoteData, useQuotations } from "@/lib/quote-store";
 import { quoteTotals } from "@/lib/quote-math";
@@ -118,7 +119,8 @@ export function QuoteView({ id }: { id: string }) {
                 disabled={busy}
                 onClick={() =>
                   run(async () => {
-                    const r = await invoiceFromQuote(quote.dbId);
+                    const dbId = quote.dbId;
+                    const r = await callAction(() => invoiceFromQuote(dbId), "Invoice from quotation");
                     if (!r.ok) {
                       toast({ tone: "info", message: <p>{r.message}</p> });
                       return;

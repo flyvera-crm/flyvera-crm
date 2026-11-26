@@ -1622,3 +1622,37 @@ describe("21 · Gap fills (migration 21)", () => {
     await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from suppliers"), 0));
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// The exact guarded updates the Quotations server actions send (src/lib/actions/quotations.ts).
+describe("22 · Quotation status & edit guards (app workflow)", () => {
+  const STATUS = "update quotations set status = $2, responded_at = now() where id = $1 and status = $3 returning id";
+  const quoteId = async (q, code) => (await q("select id from quotations where code = $1", [code]))[0].id;
+
+  it("a status change checked against the current status applies once; a stale one changes nothing", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const id = await quoteId(q, "QT-3003"); // Sara's, Sent
+      assert.equal(N(await q(STATUS, [id, "Declined", "Draft"])), 0, "stale: it isn't Draft");
+      assert.equal((await q("select status from quotations where id = $1", [id]))[0].status, "Sent", "unchanged");
+      assert.equal(N(await q(STATUS, [id, "Accepted", "Sent"])), 1, "current: applies");
+      assert.equal(N(await q(STATUS, [id, "Declined", "Sent"])), 0, "a second answer can't overwrite the first");
+      assert.equal((await q("select status from quotations where id = $1", [id]))[0].status, "Accepted");
+    });
+  });
+
+  it("an edit limited to Draft/Sent quotations doesn't touch an accepted one", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const id = await quoteId(q, "QT-3001"); // Sara's, Accepted
+      assert.equal(N(await q("update quotations set title = 'Changed' where id = $1 and status in ('Draft', 'Sent') returning id", [id])), 0);
+      assert.equal((await q("select title from quotations where id = $1", [id]))[0].title === "Changed", false);
+    });
+  });
+
+  it("a role that can read but not change quotations gets no row back and no error (never a success)", async () => {
+    await asUser(db, USERS.fiona.id, async (q) => {
+      const id = await quoteId(q, "QT-3002"); // Sent, readable by finance
+      assert.equal(N(await q(STATUS, [id, "Accepted", "Sent"])), 0, "no error, but nothing changed: the app must not report success");
+      assert.equal((await q("select status from quotations where id = $1", [id]))[0].status, "Sent");
+    });
+  });
+});
