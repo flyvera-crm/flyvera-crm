@@ -22,6 +22,8 @@ import {
 } from "@/lib/quote-validation";
 import { QUOTE_ITEM_TYPES } from "@/config/quote-options";
 import { confirmQuoteStatus, planStatusChange, QUOTE_CHANGED_MESSAGE } from "@/lib/quote-status";
+import { quoteSaveLogLine, type QuoteSaveOutcome } from "@/lib/quote-save-log";
+import { newRequestId } from "@/lib/stage-change-log";
 
 export type SaveQuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string; fieldErrors?: QuoteMessages };
 export type QuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string };
@@ -36,32 +38,43 @@ const today = () => new Date().toISOString().slice(0, 10);
 /* ─────────────────────────── save ─────────────────────────── */
 
 export async function saveQuote(target: { dbId?: string }, raw: unknown): Promise<SaveQuoteResult> {
+  // Diagnostic: one server-log line per save (random request ID, outcome, the database's quotation code; nothing else).
+  const requestId = newRequestId();
+  const done = (outcome: QuoteSaveOutcome, result: SaveQuoteResult, code?: string) => {
+    console.info(quoteSaveLogLine({ requestId, outcome, code }));
+    return result;
+  };
+
   const user = await getCurrentUser();
-  if (!user.membership) return { ok: false, message: "Your login isn't linked to an agency yet. Ask your admin." };
+  if (!user.membership) return done("invalid", { ok: false, message: "Your login isn't linked to an agency yet. Ask your admin." });
   const orgId = user.membership.organizationId;
   const editing = typeof target?.dbId === "string";
-  if (editing && !UUID_RE.test(target.dbId!)) return { ok: false, message: "That quotation couldn't be found." };
+  if (editing && !UUID_RE.test(target.dbId!)) return done("not-found", { ok: false, message: "That quotation couldn't be found." });
 
   const values = cleanValues(raw);
-  if (!values) return { ok: false, message: "The quotation couldn't be read. Reload the page and try again." };
+  if (!values) return done("invalid", { ok: false, message: "The quotation couldn't be read. Reload the page and try again." });
   const { errors } = validateQuote(values, today());
-  if (Object.keys(errors).length) return { ok: false, message: "Some details need attention.", fieldErrors: errors };
+  if (Object.keys(errors).length) return done("invalid", { ok: false, message: "Some details need attention.", fieldErrors: errors });
 
   const supabase = await createClient();
 
   let existing: { id: string; status: QuoteStatus } | null = null;
   if (editing) {
     const { data } = await supabase.from("quotations").select("id, status").eq("id", target.dbId!).is("deleted_at", null).maybeSingle();
-    if (!data) return { ok: false, message: "This quotation no longer exists, or you can't edit it." };
+    if (!data) return done("not-found", { ok: false, message: "This quotation no longer exists, or you can't edit it." });
     if (data.status === "Accepted" || data.status === "Declined")
-      return { ok: false, message: `This quotation was ${data.status.toLowerCase()} and can't be changed. Duplicate it instead.` };
+      return done("invalid", { ok: false, message: `This quotation was ${data.status.toLowerCase()} and can't be changed. Duplicate it instead.` });
     existing = data;
   }
 
   // Who it's for: the live link plus a snapshot of their details, so the document never changes later.
   const recipient = await resolveRecipient(supabase, orgId, values.recipient);
   if (!recipient) {
-    return { ok: false, message: "Choose who this quotation is for.", fieldErrors: { recipient: "That customer or lead isn't available to you." } };
+    return done("invalid", {
+      ok: false,
+      message: "Choose who this quotation is for.",
+      fieldErrors: { recipient: "That customer or lead isn't available to you." },
+    });
   }
 
   const row = {
@@ -85,21 +98,22 @@ export async function saveQuote(target: { dbId?: string }, raw: unknown): Promis
   const saved = editing
     ? await supabase.from("quotations").update(row).eq("id", existing!.id).in("status", ["Draft", "Sent"]).select("id").maybeSingle()
     : await supabase.from("quotations").insert({ ...row, organization_id: orgId, status: "Draft" }).select("id").maybeSingle();
-  if (editing && !saved.error && !saved.data) return { ok: false, message: QUOTE_CHANGED_MESSAGE };
-  if (saved.error || !saved.data) return { ok: false, ...failure(saved.error, "save this quotation") };
+  if (editing && !saved.error && !saved.data) return done("insert-failed", { ok: false, message: QUOTE_CHANGED_MESSAGE });
+  if (saved.error || !saved.data) return done("insert-failed", { ok: false, ...failure(saved.error, "save this quotation") });
   const quoteId = saved.data.id as string;
 
   const itemsError = await saveItems(supabase, orgId, quoteId, values.items, editing);
   const quote = await loadQuote(supabase, quoteId);
   refresh();
   if (itemsError) {
-    return {
-      ok: false,
-      message: `The quotation was saved, but its items weren't all saved (${itemsError}). Open it and check the items.`,
-    };
+    return done(
+      "items-failed",
+      { ok: false, message: `The quotation was saved, but its items weren't all saved (${itemsError}). Open it and check the items.` },
+      quote?.id,
+    );
   }
-  if (!quote) return { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." };
-  return { ok: true, quote };
+  if (!quote) return done("not-found", { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." });
+  return done("ok", { ok: true, quote }, quote.id);
 }
 
 /**

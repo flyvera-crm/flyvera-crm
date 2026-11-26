@@ -88,7 +88,7 @@ describe("the server only reports changes the database actually made", () => {
 
   it("an edit applies only while the quotation is Draft or Sent, and says so when it was answered meanwhile", () => {
     assert.match(actions, /\.update\(row\)\.eq\("id", existing!\.id\)\.in\("status", \["Draft", "Sent"\]\)\.select\("id"\)\.maybeSingle\(\)/);
-    assert.match(actions, /if \(editing && !saved\.error && !saved\.data\) return \{ ok: false, message: QUOTE_CHANGED_MESSAGE \};/);
+    assert.match(actions, /if \(editing && !saved\.error && !saved\.data\) return done\("insert-failed", \{ ok: false, message: QUOTE_CHANGED_MESSAGE \}\);/);
   });
 
   it("the 'changed meanwhile' message tells the user what to do", () => {
