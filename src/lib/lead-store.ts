@@ -8,6 +8,7 @@ import type { Lead } from "@/types/crm";
 import type { LeadAccess } from "@/lib/data/leads";
 import { setLeadStatus, type LeadStatusPatch } from "@/lib/actions/leads";
 import { todayIso } from "@/lib/dates";
+import { callAction } from "@/lib/action-call";
 
 export type { LeadStatusPatch };
 
@@ -70,8 +71,10 @@ export function LeadListProvider({
         },
         lead.id,
       );
-      const result = await setLeadStatus(lead.dbId, patch);
-      put(result.ok ? result.lead : undefined, lead.id); // on failure, drop the optimistic change
+      const dbId = lead.dbId;
+      // An unexpected failure (the call throws) becomes { ok: false, message } instead of being lost.
+      const result = await callAction(() => setLeadStatus(dbId, patch), "Lead stage change");
+      put(result.ok ? result.lead : undefined, lead.id); // on any failure, move the card back
       return result;
     },
     [put],
