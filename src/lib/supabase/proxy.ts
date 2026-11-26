@@ -11,7 +11,7 @@ import { supabaseEnv } from "./env";
 /** Only for signed-out visitors (signed-in users are sent to the dashboard). */
 const PUBLIC_PATHS = ["/login", "/forgot-password"];
 /** Open to everyone: email links (invitations, password resets) sign the person in here. */
-const OPEN_PATHS = ["/auth/confirm"];
+const OPEN_PATHS = ["/auth/confirm", "/api/build-info"];
 
 export async function updateSession(request: NextRequest) {
   const { url, key } = supabaseEnv();
