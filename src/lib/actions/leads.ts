@@ -18,6 +18,7 @@ import {
   type LeadMessages,
 } from "@/lib/lead-validation";
 import { LEAD_PRIORITIES, LEAD_SOURCES, LEAD_STAGES, TRIP_TYPES } from "@/config/lead-options";
+import { newRequestId, stageChangeLogLine, type StageChangeOutcome } from "@/lib/stage-change-log";
 
 export type SaveLeadResult = { ok: true; lead: Lead } | { ok: false; message: string; fieldErrors?: LeadMessages };
 export type LeadStatusResult = { ok: true; lead: Lead } | { ok: false; message: string };
@@ -91,12 +92,20 @@ export async function saveLead(target: { dbId?: string }, raw: unknown): Promise
 }
 
 export async function setLeadStatus(dbId: unknown, rawPatch: unknown): Promise<LeadStatusResult> {
-  if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return { ok: false, message: "That lead couldn't be found." };
+  // Diagnostic: one server-log line per call (random request ID, requested stage, outcome; no personal data).
+  const requestId = newRequestId();
+  const requestedStage = rawPatch && typeof rawPatch === "object" ? (rawPatch as { stage?: unknown }).stage : undefined;
+  const done = (outcome: StageChangeOutcome, result: LeadStatusResult) => {
+    console.info(stageChangeLogLine({ requestId, stage: requestedStage, outcome }));
+    return result;
+  };
+
+  if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return done("invalid-input", { ok: false, message: "That lead couldn't be found." });
   const patch = cleanPatch(rawPatch);
-  if (!patch) return { ok: false, message: "That change isn't valid." };
+  if (!patch) return done("invalid-input", { ok: false, message: "That change isn't valid." });
 
   const user = await getCurrentUser();
-  if (!user.membership) return { ok: false, message: "Your login isn't linked to an agency yet. Ask your admin." };
+  if (!user.membership) return done("no-membership", { ok: false, message: "Your login isn't linked to an agency yet. Ask your admin." });
   const supabase = await createClient();
 
   const { data: current } = await supabase
@@ -105,7 +114,7 @@ export async function setLeadStatus(dbId: unknown, rawPatch: unknown): Promise<L
     .eq("id", dbId)
     .is("deleted_at", null)
     .maybeSingle<{ id: string; stage: LeadStage; lost_reason: string | null; next_follow_up_on: string | null }>();
-  if (!current) return { ok: false, message: "This lead no longer exists, or you can't change it." };
+  if (!current) return done("not-found", { ok: false, message: "This lead no longer exists, or you can't change it." });
 
   const stage = patch.stage ?? current.stage;
   const update: Record<string, unknown> = {
@@ -126,16 +135,16 @@ export async function setLeadStatus(dbId: unknown, rawPatch: unknown): Promise<L
       .eq("organization_id", user.membership.organizationId)
       .eq("code", patch.customerCode)
       .maybeSingle();
-    if (!customer) return { ok: false, message: `Customer ${patch.customerCode} wasn't found.` };
+    if (!customer) return done("customer-not-found", { ok: false, message: `Customer ${patch.customerCode} wasn't found.` });
     update.customer_id = customer.id;
     update.converted_at = new Date().toISOString();
   }
 
   const { data, error } = await supabase.from("leads").update(update).eq("id", dbId).select(LEAD_COLUMNS).maybeSingle<LeadRow>();
-  if (error || !data) return { ok: false, message: failure(error, "change this lead").message };
+  if (error || !data) return done("update-failed", { ok: false, message: failure(error, "change this lead").message });
 
   refresh();
-  return { ok: true, lead: mapLead(data, await getTeam()) };
+  return done("ok", { ok: true, lead: mapLead(data, await getTeam()) });
 }
 
 /* ─────────────────────────── helpers ─────────────────────────── */
