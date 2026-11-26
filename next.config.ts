@@ -18,6 +18,13 @@ export const SECURITY_HEADERS = [
 const nextConfig: NextConfig = {
   // Don't advertise the framework (X-Powered-By: Next.js).
   poweredByHeader: false,
+  experimental: {
+    // Build with at most 2 worker processes. The default is one per server CPU core (31 on Hostinger), and
+    // those processes count toward the hosting account's shared process limit. Reaching it during a deploy
+    // stops the app's Node.js process from starting ("execve(): Resource temporarily unavailable").
+    // Only affects `next build`; the running app is unchanged.
+    cpus: 2,
+  },
   async headers() {
     return [{ source: "/:path*", headers: SECURITY_HEADERS }];
   },

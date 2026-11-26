@@ -53,6 +53,13 @@ describe("the build requires a fixed Server Actions key", () => {
   });
 });
 
+describe("the build stays within the hosting account's process limit", () => {
+  it("next.config.ts caps build workers at 2 and changes no other experimental setting", async () => {
+    const { default: nextConfig } = await import("../../next.config.ts");
+    assert.deepEqual(nextConfig.experimental, { cpus: 2 });
+  });
+});
+
 describe("/api/build-info", () => {
   const ids = ["60014b15425d5d7e3ef95eed44aa32d9eed9f19a0d", "6092be365060c29f5561ec052766dbf9dcd7245ac5"];
 
