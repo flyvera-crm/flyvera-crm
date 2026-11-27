@@ -11,10 +11,12 @@ import {
   emptyPassenger,
   emptyPnr,
   emptySegment,
+  emptyVerification,
   PASSENGER_TITLES,
   PASSENGER_TYPES,
   PNR_PROVIDERS,
   PNR_STATUSES,
+  resetsVerification,
   SEGMENT_STATUSES,
   TICKET_CHANGES,
   validatePassenger,
@@ -23,11 +25,14 @@ import {
   validateSegment,
   validateTicket,
   validateTicketChange,
+  validateVerification,
+  VERIFY_NOTES_MAX,
   type PassengerFormValues,
   type PassportFormValues,
   type PnrFormValues,
   type SegmentFormValues,
   type TicketFormValues,
+  type VerifyPnrValues,
 } from "@/lib/ticketing-rules";
 import { Modal } from "@/components/ui/Modal";
 import { Field, inputClass } from "@/components/ui/form";
@@ -288,6 +293,7 @@ export function PnrModal({ pnr, onClose, onSave }: { pnr?: Pnr; onClose: () => v
       ? {
           recordLocator: pnr.recordLocator,
           airlineLocator: pnr.airlineLocator ?? "",
+          airline: pnr.airline ?? "",
           provider: pnr.provider,
           status: pnr.status,
           ticketingDeadline: pnr.ticketingDeadline ?? "",
@@ -295,6 +301,7 @@ export function PnrModal({ pnr, onClose, onSave }: { pnr?: Pnr; onClose: () => v
       : emptyPnr,
   );
   const errors = validatePnr(v);
+  const willReset = pnr ? resetsVerification(pnr, v) : false;
   const { submitted, saving, submit } = useSave(onSave, onClose);
   const err = (k: keyof PnrFormValues) => (submitted ? errors[k] : undefined);
 
@@ -313,6 +320,9 @@ export function PnrModal({ pnr, onClose, onSave }: { pnr?: Pnr; onClose: () => v
         <Field id="pnrAirline" label="Airline locator" error={err("airlineLocator")} className="col-span-2 sm:col-span-1">
           <input id="pnrAirline" value={v.airlineLocator} onChange={(e) => setV({ ...v, airlineLocator: e.target.value })} className={inputClass(!!err("airlineLocator"), cn("h-11 font-mono", upper))} />
         </Field>
+        <Field id="pnrAirlineCode" label="Airline" error={err("airline")} hint="2-character code, e.g. EK" className="col-span-2 sm:col-span-1">
+          <input id="pnrAirlineCode" value={v.airline} maxLength={2} onChange={(e) => setV({ ...v, airline: e.target.value })} placeholder="EK" className={inputClass(!!err("airline"), cn("h-11 font-mono", upper))} />
+        </Field>
         <Field id="pnrProvider" label="Booked via" required className="col-span-1">
           <Select id="pnrProvider" value={v.provider} onChange={(x) => setV({ ...v, provider: x as PnrFormValues["provider"] })}>
             {PNR_PROVIDERS.map((p) => (
@@ -330,6 +340,71 @@ export function PnrModal({ pnr, onClose, onSave }: { pnr?: Pnr; onClose: () => v
         <Field id="pnrDeadline" label="Ticketing deadline" error={err("ticketingDeadline")} hint="As shown by the GDS — the booking is cancelled if not ticketed by then." className="col-span-2">
           <input id="pnrDeadline" type="datetime-local" value={v.ticketingDeadline} onChange={(e) => setV({ ...v, ticketingDeadline: e.target.value })} className={inputClass(!!err("ticketingDeadline"))} />
         </Field>
+        {willReset && (
+          <p role="status" className="col-span-2 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+            <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
+            <span>This PNR was checked ({pnr!.verification.status.toLowerCase()}). Changing its locators, airline or provider sets the verification back to Pending, so it needs checking again.</span>
+          </p>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+/* ─────────────── PNR verification ─────────────── */
+
+/** Records the result of checking a PNR with the airline or consolidator (website, phone, portal). */
+export function VerifyPnrModal({ pnr, onClose, onSave }: { pnr: Pnr; onClose: () => void; onSave: SaveFn<VerifyPnrValues> }) {
+  const [v, setV] = useState<VerifyPnrValues>(emptyVerification);
+  const errors = validateVerification(v);
+  const { submitted, saving, submit } = useSave(onSave, onClose);
+  const RESULTS: VerifyPnrValues["status"][] = ["Verified", "Not verified"];
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Verify PNR ${pnr.recordLocator}`}
+      description="Record what the airline or consolidator confirmed. This is separate from the PNR status and from ticket issue."
+      footer={<Footer formId="verify-pnr-form" saving={saving} label="Save result" onClose={onClose} />}
+    >
+      <form id="verify-pnr-form" onSubmit={(e) => submit(e, v, Object.keys(errors).length > 0)} noValidate className="grid gap-4">
+        <fieldset>
+          <legend className="mb-1.5 text-sm font-medium text-navy-700">Result</legend>
+          <div className="grid grid-cols-2 gap-2">
+            {RESULTS.map((s) => (
+              <label
+                key={s}
+                className={cn(
+                  "flex h-10 cursor-pointer items-center justify-center rounded-xl border text-sm font-medium",
+                  v.status === s ? "border-navy-900 bg-navy-900 text-white" : "border-navy-100 text-navy-600 hover:bg-navy-50",
+                )}
+              >
+                <input type="radio" name="pnrVerification" value={s} checked={v.status === s} onChange={() => setV({ ...v, status: s })} className="sr-only" />
+                {s}
+              </label>
+            ))}
+          </div>
+          {submitted && errors.status && <p className="mt-1.5 text-sm text-rose-600">{errors.status}</p>}
+        </fieldset>
+        <Field
+          id="verifyNotes"
+          label="Notes"
+          required={v.status === "Not verified"}
+          error={submitted ? errors.notes : undefined}
+          hint={v.status === "Not verified" ? "Say why it couldn't be verified." : "How it was checked, e.g. airline website or phone."}
+        >
+          <textarea
+            id="verifyNotes"
+            rows={2}
+            maxLength={VERIFY_NOTES_MAX}
+            value={v.notes}
+            onChange={(e) => setV({ ...v, notes: e.target.value })}
+            placeholder="e.g. Checked on the Emirates website, 2 passengers confirmed"
+            className={inputClass(submitted && !!errors.notes, "min-h-16 resize-y py-2.5")}
+          />
+        </Field>
+        <p className="text-xs text-navy-400">Saved with your name and the current time. A later check replaces the result shown here; earlier ones stay in the booking timeline and audit log.</p>
       </form>
     </Modal>
   );

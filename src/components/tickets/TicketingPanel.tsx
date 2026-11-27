@@ -18,15 +18,25 @@ import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { inputClass } from "@/components/ui/form";
 import { Icon } from "@/components/icons";
 import { cn, formatDate, formatMoney } from "@/lib/format";
-import { IssueTicketModal, PassengerModal, PassportModal, PnrModal, SegmentModal, TicketChangeModal } from "./ticketing-modals";
+import { IssueTicketModal, PassengerModal, PassportModal, PnrModal, SegmentModal, TicketChangeModal, VerifyPnrModal } from "./ticketing-modals";
 
 const TICKET_TONE: Record<TicketStatus, BadgeTone> = { Issued: "success", Voided: "neutral", Refunded: "warning", Exchanged: "info" };
 const PNR_TONE: Record<Pnr["status"], BadgeTone> = { Active: "info", Ticketed: "success", Cancelled: "danger", Expired: "neutral" };
+/** Manual verification (separate from the PNR status above and from tickets). */
+const VERIFICATION_TONE: Record<Pnr["verification"]["status"], BadgeTone> = { Pending: "warning", Verified: "success", "Not verified": "danger" };
+const VERIFICATION_LABEL: Record<Pnr["verification"]["status"], string> = { Pending: "Not verified yet", Verified: "Verified", "Not verified": "Not verified" };
+
+/** "Verified 27 Nov 2026 by Leo M. — Checked on the airline website" (or "Not checked yet"). */
+function verificationSummary(v: Pnr["verification"]) {
+  if (v.status === "Pending" || !v.at) return "Not checked with the airline or consolidator yet";
+  return `${v.status} ${formatDate(v.at.slice(0, 10))}${v.by ? ` by ${v.by}` : ""}${v.notes ? ` — ${v.notes}` : ""}`;
+}
 
 type Dialog =
   | { kind: "passenger"; passenger?: Passenger; suggested?: Parameters<typeof PassengerModal>[0]["suggested"] }
   | { kind: "passport"; passenger: Passenger }
   | { kind: "pnr"; pnr?: Pnr }
+  | { kind: "verify"; pnr: Pnr }
   | { kind: "segment"; segment?: Segment }
   | { kind: "ticket"; passengerId?: string }
   | { kind: "ticketChange"; ticket: Ticket };
@@ -152,21 +162,34 @@ export function TicketingPanel({ booking, data, today }: { booking: Booking; dat
                   {data.pnrs.map((r) => {
                     const deadlineSoon = r.status === "Active" && r.ticketingDeadline && today && r.ticketingDeadline.slice(0, 10) <= addDays(today, 2);
                     return (
-                      <li key={r.id}>
+                      <li key={r.id} className="flex items-center gap-1">
                         <button
                           onClick={() => access.canManage && !closed && setDialog({ kind: "pnr", pnr: r })}
                           disabled={!access.canManage || closed}
                           className="flex items-center gap-2 rounded-xl border border-navy-100 px-3 py-2 text-left text-sm enabled:hover:bg-navy-50"
                         >
                           <span className="font-mono font-semibold text-navy-900">{r.recordLocator}</span>
+                          {r.airline && <span className="font-mono text-xs text-navy-500">{r.airline}</span>}
                           <span className="text-xs text-navy-400">{r.provider}</span>
                           <Badge tone={PNR_TONE[r.status]}>{r.status}</Badge>
+                          <span title={verificationSummary(r.verification)}>
+                            <Badge tone={VERIFICATION_TONE[r.verification.status]}>{VERIFICATION_LABEL[r.verification.status]}</Badge>
+                          </span>
                           {r.ticketingDeadline && r.status === "Active" && (
                             <span className={cn("text-xs", deadlineSoon ? "font-semibold text-rose-600" : "text-navy-400")}>
                               ticket by {formatLocalDateTime(r.ticketingDeadline)}
                             </span>
                           )}
                         </button>
+                        {access.canManage && !closed && (
+                          <button
+                            onClick={() => setDialog({ kind: "verify", pnr: r })}
+                            aria-label={`Verify PNR ${r.recordLocator}`}
+                            className="rounded-lg px-2 py-1 text-xs font-semibold text-sky-brand-dark hover:bg-navy-50 hover:text-navy-900"
+                          >
+                            Verify
+                          </button>
+                        )}
                       </li>
                     );
                   })}
@@ -306,6 +329,13 @@ export function TicketingPanel({ booking, data, today }: { booking: Booking; dat
       )}
       {dialog?.kind === "pnr" && (
         <PnrModal pnr={dialog.pnr} onClose={() => setDialog(null)} onSave={(v) => run(server.savePnr(data.bookingDbId, dialog.pnr?.id ?? null, v), "Reservation saved.")} />
+      )}
+      {dialog?.kind === "verify" && (
+        <VerifyPnrModal
+          pnr={dialog.pnr}
+          onClose={() => setDialog(null)}
+          onSave={(v) => run(server.verifyPnr(data.bookingDbId, dialog.pnr.id, v), `PNR ${dialog.pnr.recordLocator}: ${v.status.toLowerCase()}.`)}
+        />
       )}
       {dialog?.kind === "segment" && (
         <SegmentModal

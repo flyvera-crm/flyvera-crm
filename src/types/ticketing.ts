@@ -32,14 +32,29 @@ export type Passenger = {
   isLead: boolean;
 };
 
+/** Manual check of a PNR with the airline/consolidator. Separate from the PNR's status and from tickets. */
+export type PnrVerificationStatus = "Pending" | "Verified" | "Not verified";
+
+export type PnrVerification = {
+  status: PnrVerificationStatus;
+  /** ISO timestamp of the latest check (absent while Pending). */
+  at?: string;
+  /** Who recorded it (display name). */
+  by?: string;
+  notes?: string;
+};
+
 export type Pnr = {
   id: string;
   recordLocator: string;
   airlineLocator?: string;
+  /** Airline's 2-character code, e.g. "EK". */
+  airline?: string;
   provider: PnrProvider;
   status: PnrStatus;
   /** "YYYY-MM-DDTHH:mm" as entered (agency local time). */
   ticketingDeadline?: string;
+  verification: PnrVerification;
 };
 
 export type Segment = {

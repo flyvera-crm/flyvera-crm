@@ -58,9 +58,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 22 migrations in order on an empty database", () => {
+  it("applies all 23 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 22);
+    assert.equal(files.length, 23);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -1814,5 +1814,154 @@ describe("23 · Answered quotations are final (migration 22)", () => {
     await asUser(db, USERS.leo.id, async (q) => assert.equal(N(await q("update quotations set title = 'x' where code = 'QT-3002' returning id")), 0));
     await asUser(db, USERS.fiona.id, async (q) => assert.equal(N(await q("update quotations set title = 'x' where code = 'QT-3002' returning id")), 0));
     await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from quotations"), 0));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("24 · Manual PNR verification (migration 23)", () => {
+  /** An Active PNR from the seed, with its booking. */
+  const somePnr = async (q) =>
+    (await q("select id, booking_id, record_locator, status from pnr_records where status = 'Active' order by record_locator limit 1"))[0];
+  const verification = async (q, id) =>
+    (await q("select verification_status, verified_at, verified_by, verification_notes, status from pnr_records where id = $1", [id]))[0];
+
+  it("every PNR starts as Pending, and a new one can't be created already verified", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      assert.equal(await count(q, "select 1 from pnr_records where verification_status <> 'Pending'"), 0);
+      const pnr = await somePnr(q);
+      const [created] = await q(
+        `insert into pnr_records (organization_id, booking_id, record_locator, provider, airline, verification_status, verified_at, verified_by, verification_notes)
+         values ($1, $2, 'NEWPNR', 'Manual', 'EK', 'Verified', now(), $3, 'sent by the browser') returning id`,
+        [ORG, pnr.booking_id, USERS.leo.id],
+      );
+      const v = await verification(q, created.id);
+      assert.deepEqual([v.verification_status, v.verified_at, v.verified_by, v.verification_notes], ["Pending", null, null, null]);
+    });
+  });
+
+  it("a ticketing agent records Verified: stamped with who and when, on the timeline, audited", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const pnr = await somePnr(q);
+      const events = () => count(q, "select 1 from booking_events where booking_id = $1", [pnr.booking_id]);
+      const eventsBefore = await events();
+      await q("select verify_pnr($1, 'Verified', 'Checked on the Emirates website')", [pnr.id]);
+      const v = await verification(q, pnr.id);
+      assert.equal(v.verification_status, "Verified");
+      assert.equal(v.verified_by, USERS.leo.id, "stamped with the signed-in user, not a value from the browser");
+      assert.ok(v.verified_at);
+      assert.equal(v.verification_notes, "Checked on the Emirates website");
+      assert.equal(v.status, pnr.status, "the PNR's own status is untouched");
+      assert.equal(await events(), eventsBefore + 1);
+      const [e] = await q("select body from booking_events where booking_id = $1 order by created_at desc limit 1", [pnr.booking_id]);
+      assert.equal(e.body, `PNR ${pnr.record_locator} verified — Checked on the Emirates website`);
+    });
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const pnr = await somePnr(q);
+      const audits = () => count(q, "select 1 from audit_logs where table_name = 'pnr_records' and record_id = $1", [pnr.id]);
+      const before = await audits();
+      await q("select verify_pnr($1, 'Verified', null)", [pnr.id]);
+      assert.equal(await audits(), before + 1, "admins may verify too, and the change is audited");
+    });
+  });
+
+  it("Not verified needs a reason; Pending can't be chosen; notes are limited to 500 characters", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const pnr = await somePnr(q);
+      await q.fails("select verify_pnr($1, 'Not verified', null)", [pnr.id], /Say why the PNR could not be verified/);
+      await q.fails("select verify_pnr($1, 'Not verified', '  ')", [pnr.id], /Say why/);
+      await q.fails("select verify_pnr($1, 'Pending', 'x')", [pnr.id], /Choose Verified or Not verified/);
+      await q.fails("select verify_pnr($1, 'Verified', $2)", [pnr.id, "x".repeat(501)], /at most 500/);
+      await q("select verify_pnr($1, 'Not verified', 'Airline has no record of this locator')", [pnr.id]);
+      const v = await verification(q, pnr.id);
+      assert.equal(v.verification_status, "Not verified");
+      assert.equal(v.verification_notes, "Airline has no record of this locator");
+      // A later check can change the result (each one stamped and on the timeline).
+      await q("select verify_pnr($1, 'Verified', 'Re-checked by phone')", [pnr.id]);
+      assert.equal((await verification(q, pnr.id)).verification_status, "Verified");
+    });
+  });
+
+  it("the verification can't be set or faked by editing the PNR directly", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const pnr = await somePnr(q);
+      await q(
+        "update pnr_records set verification_status = 'Verified', verified_at = now(), verified_by = $2, verification_notes = 'fake' where id = $1",
+        [pnr.id, USERS.aisha.id],
+      );
+      const v = await verification(q, pnr.id);
+      assert.deepEqual([v.verification_status, v.verified_at, v.verified_by, v.verification_notes], ["Pending", null, null, null]);
+
+      await q("select verify_pnr($1, 'Verified', 'ok')", [pnr.id]);
+      await q("update pnr_records set verification_status = 'Not verified', verification_notes = 'changed' where id = $1", [pnr.id]);
+      const after = await verification(q, pnr.id);
+      assert.equal(after.verification_status, "Verified");
+      assert.equal(after.verification_notes, "ok");
+    });
+  });
+
+  it("changing the PNR's identity resets it to Pending; other edits keep the result", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const pnr = await somePnr(q);
+      await q("select verify_pnr($1, 'Verified', 'ok')", [pnr.id]);
+      await q("update pnr_records set ticketing_deadline = now() + interval '3 days' where id = $1", [pnr.id]);
+      assert.equal((await verification(q, pnr.id)).verification_status, "Verified", "deadline change keeps it");
+      await q("update pnr_records set status = 'Ticketed' where id = $1", [pnr.id]);
+      assert.equal((await verification(q, pnr.id)).verification_status, "Verified", "reservation status is separate");
+
+      for (const change of ["record_locator = 'ZZZ999'", "airline_locator = 'AIR123'", "airline = 'QR'", "provider = case when provider = 'Sabre' then 'Travelport'::pnr_provider else 'Sabre'::pnr_provider end"]) {
+        await q("select verify_pnr($1, 'Verified', 'ok')", [pnr.id]);
+        await q(`update pnr_records set ${change} where id = $1`, [pnr.id]);
+        const v = await verification(q, pnr.id);
+        assert.deepEqual([v.verification_status, v.verified_at, v.verified_by, v.verification_notes], ["Pending", null, null, null], change);
+      }
+    });
+  });
+
+  it("only admins and ticketing agents may verify (the same people who manage PNRs)", async () => {
+    for (const user of [USERS.sara, USERS.maya, USERS.fiona, USERS.sam]) {
+      await asUser(db, user.id, async (q) => {
+        const [pnr] = await q("select id from pnr_records limit 1");
+        const id = pnr?.id ?? "00000000-0000-0000-0000-000000000000";
+        await q.fails("select verify_pnr($1, 'Verified', 'x')", [id], /You cannot verify this PNR/);
+      });
+    }
+    await asAnon(db, async (q) => {
+      await q.fails("select verify_pnr('00000000-0000-0000-0000-000000000000', 'Verified', 'x')", [], /permission denied|cannot verify/);
+    });
+  });
+
+  it("an admin of another agency can't verify this agency's PNR", async () => {
+    let pnrId;
+    await asUser(db, USERS.leo.id, async (q) => (pnrId = (await somePnr(q)).id));
+    await asUser(db, USERS.nora.id, async (q) => {
+      await q.fails("select verify_pnr($1, 'Verified', 'x')", [pnrId], /You cannot verify this PNR/);
+    });
+  });
+
+  it("tickets don't depend on it: a ticket can still be issued on a Pending PNR, and issuing doesn't change verification", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const [t] = await q(
+        `select b.id booking_id, p.id pnr_id, x.id passenger_id from bookings b
+         join pnr_records p on p.booking_id = b.id and p.status = 'Active'
+         join passengers x on x.booking_id = b.id
+         where b.status in ('Confirmed', 'Ticketed')
+           and not exists (select 1 from tickets k where k.passenger_id = x.id and k.status = 'Issued')
+         limit 1`,
+      );
+      assert.ok(t, "a confirmed booking with an active PNR and an unticketed passenger exists in the seed");
+      assert.equal((await verification(q, t.pnr_id)).verification_status, "Pending");
+      await q("select issue_ticket($1, $2, $3, '1761234567890', 'EK', 500, 80, now())", [t.booking_id, t.passenger_id, t.pnr_id]);
+      assert.equal((await verification(q, t.pnr_id)).verification_status, "Pending");
+    });
+  });
+
+  it("the database keeps results consistent, even for the service role", async () => {
+    await asOwner(db, async (q) => {
+      const [pnr] = await q("select id from pnr_records where organization_id = $1 limit 1", [ORG]);
+      await q.fails("update pnr_records set verification_status = 'Verified' where id = $1", [pnr.id], /verified_at_matches_status/);
+      await q.fails("update pnr_records set verification_status = 'Not verified', verified_at = now() where id = $1", [pnr.id], /not_verified_needs_notes/);
+      assert.equal(N(await q("update pnr_records set verification_status = 'Verified', verified_at = now() where id = $1 returning id", [pnr.id])), 1,
+        "the service role (imports, support) is not limited to verify_pnr()");
+    });
   });
 });

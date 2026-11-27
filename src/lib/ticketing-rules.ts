@@ -6,6 +6,7 @@ import type {
   PassengerType,
   PnrProvider,
   PnrStatus,
+  PnrVerificationStatus,
   SegmentStatus,
   TicketDocumentKind,
   TicketStatus,
@@ -17,6 +18,7 @@ export const PASSENGER_TITLES = ["Mr", "Mrs", "Ms", "Mx", "Dr", "Mstr", "Miss"];
 export const DOCUMENT_TYPES: TravelDocumentType[] = ["Passport", "National ID", "Visa", "Residence permit"];
 export const PNR_PROVIDERS: PnrProvider[] = ["Manual", "Amadeus", "Sabre", "Travelport", "NDC", "Airline direct"];
 export const PNR_STATUSES: PnrStatus[] = ["Active", "Ticketed", "Cancelled", "Expired"];
+export const PNR_VERIFICATION_STATUSES: PnrVerificationStatus[] = ["Pending", "Verified", "Not verified"];
 export const CABIN_CLASSES: CabinClass[] = ["Economy", "Premium economy", "Business", "First"];
 export const SEGMENT_STATUSES: SegmentStatus[] = ["Confirmed", "Waitlisted", "Cancelled", "Flown"];
 export const TICKET_CHANGES: Exclude<TicketStatus, "Issued">[] = ["Voided", "Refunded", "Exchanged"];
@@ -104,12 +106,14 @@ export function validatePassport(v: PassportFormValues, today: string) {
 export type PnrFormValues = {
   recordLocator: string;
   airlineLocator: string;
+  /** Airline's 2-character code, e.g. "EK" (optional). */
+  airline: string;
   provider: PnrProvider;
   status: PnrStatus;
   ticketingDeadline: string; // "YYYY-MM-DDTHH:mm" or ""
 };
 
-export const emptyPnr: PnrFormValues = { recordLocator: "", airlineLocator: "", provider: "Manual", status: "Active", ticketingDeadline: "" };
+export const emptyPnr: PnrFormValues = { recordLocator: "", airlineLocator: "", airline: "", provider: "Manual", status: "Active", ticketingDeadline: "" };
 
 export function validatePnr(v: PnrFormValues) {
   const e: Errors<keyof PnrFormValues> = {};
@@ -118,8 +122,50 @@ export function validatePnr(v: PnrFormValues) {
   else if (!LOCATOR_RE.test(rec)) e.recordLocator = "Record locators are 5–8 letters or digits.";
   const air = v.airlineLocator.trim().toUpperCase();
   if (air && !LOCATOR_RE.test(air)) e.airlineLocator = "Airline locators are 5–8 letters or digits.";
+  const airline = v.airline.trim().toUpperCase();
+  if (airline && !CARRIER_RE.test(airline)) e.airline = "Airline codes are 2 letters or digits (e.g. EK).";
   if (v.ticketingDeadline && !DATETIME_RE.test(v.ticketingDeadline)) e.ticketingDeadline = "Enter a date and time.";
   return e;
+}
+
+/* ── PNR verification (manual check with the airline / consolidator) ── */
+
+export const VERIFY_NOTES_MAX = 500;
+
+export type VerifyPnrValues = {
+  /** The result of the check; "" until chosen. Pending can't be chosen: it means "not checked yet". */
+  status: Exclude<PnrVerificationStatus, "Pending"> | "";
+  notes: string;
+};
+
+export const emptyVerification: VerifyPnrValues = { status: "", notes: "" };
+
+/** Same rules as the database function verify_pnr() (migration 23). */
+export function validateVerification(v: VerifyPnrValues) {
+  const e: Errors<keyof VerifyPnrValues> = {};
+  if (v.status !== "Verified" && v.status !== "Not verified") e.status = "Choose Verified or Not verified.";
+  const notes = v.notes.trim();
+  if (v.status === "Not verified" && notes.length < 3) e.notes = "Say why the PNR could not be verified.";
+  else if (notes.length > VERIFY_NOTES_MAX) e.notes = `Notes can be at most ${VERIFY_NOTES_MAX} characters.`;
+  return e;
+}
+
+/**
+ * Whether saving these PNR details sends its verification back to Pending: the database does this when
+ * the record locator, airline locator, airline or provider changes (migration 23). Used to warn first.
+ */
+export function resetsVerification(
+  before: { recordLocator: string; airlineLocator?: string; airline?: string; provider: PnrProvider; verification: { status: PnrVerificationStatus } },
+  after: Pick<PnrFormValues, "recordLocator" | "airlineLocator" | "airline" | "provider">,
+) {
+  if (before.verification.status === "Pending") return false;
+  const norm = (x: string | undefined) => (x ?? "").trim().toUpperCase();
+  return (
+    norm(before.recordLocator) !== norm(after.recordLocator) ||
+    norm(before.airlineLocator) !== norm(after.airlineLocator) ||
+    norm(before.airline) !== norm(after.airline) ||
+    before.provider !== after.provider
+  );
 }
 
 /* ── Flight legs ── */

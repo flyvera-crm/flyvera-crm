@@ -14,6 +14,7 @@ import type {
   Pnr,
   PnrProvider,
   PnrStatus,
+  PnrVerificationStatus,
   Segment,
   SegmentStatus,
   Ticket,
@@ -25,6 +26,7 @@ import type {
 } from "@/types/ticketing";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser, type AppRole } from "@/lib/auth";
+import { agentName, getTeam } from "@/lib/data/team";
 
 const PASSENGER_ROLES: AppRole[] = ["admin", "ticketing_agent", "sales_manager", "sales_agent"];
 const TICKET_ROLES: AppRole[] = ["admin", "ticketing_agent", "finance_manager", "sales_manager", "sales_agent"];
@@ -160,13 +162,13 @@ export async function loadTicketing(
   access: TicketingAccess,
 ): Promise<BookingTicketing> {
   const none = Promise.resolve({ data: [] as never[] });
-  const [passengers, pnrs, segments, tickets, documents] = await Promise.all([
+  const [passengers, pnrs, segments, tickets, documents, team] = await Promise.all([
     access.canSeePassengers
       ? supabase.from("passengers").select(PASSENGER_COLUMNS).eq("booking_id", bookingDbId).order("created_at").overrideTypes<PassengerRow[], { merge: false }>()
       : none,
     supabase
       .from("pnr_records")
-      .select("id, record_locator, airline_locator, provider, status, ticketing_deadline, created_at")
+      .select("id, record_locator, airline_locator, airline, provider, status, ticketing_deadline, created_at, verification_status, verified_at, verified_by, verification_notes")
       .eq("booking_id", bookingDbId)
       .order("created_at"),
     supabase
@@ -184,6 +186,7 @@ export async function loadTicketing(
           .eq("booking_id", bookingDbId)
           .order("created_at")
       : none,
+    getTeam(), // names for "verified by"
   ]);
 
   return {
@@ -195,17 +198,29 @@ export async function loadTicketing(
       id: string;
       record_locator: string;
       airline_locator: string | null;
+      airline: string | null;
       provider: PnrProvider;
       status: PnrStatus;
       ticketing_deadline: string | null;
+      verification_status: PnrVerificationStatus;
+      verified_at: string | null;
+      verified_by: string | null;
+      verification_notes: string | null;
     }[]).map(
       (r): Pnr => ({
         id: r.id,
         recordLocator: r.record_locator,
         airlineLocator: r.airline_locator ?? undefined,
+        airline: r.airline ?? undefined,
         provider: r.provider,
         status: r.status,
         ticketingDeadline: r.ticketing_deadline ? localTime(r.ticketing_deadline) : undefined,
+        verification: {
+          status: r.verification_status ?? "Pending",
+          at: r.verified_at ?? undefined,
+          by: r.verified_by ? agentName(team, r.verified_by) : undefined,
+          notes: r.verification_notes ?? undefined,
+        },
       }),
     ),
     segments: ((segments.data ?? []) as {

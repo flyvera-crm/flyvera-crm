@@ -27,11 +27,13 @@ import {
   validateSegment,
   validateTicket,
   validateTicketChange,
+  validateVerification,
   type PassengerFormValues,
   type PassportFormValues,
   type PnrFormValues,
   type SegmentFormValues,
   type TicketFormValues,
+  type VerifyPnrValues,
 } from "@/lib/ticketing-rules";
 
 export type ActionResult = { ok: true; message?: string } | { ok: false; message: string };
@@ -202,6 +204,7 @@ export async function savePnr(bookingDbId: unknown, pnrDbId: unknown, raw: unkno
   const v: PnrFormValues = {
     recordLocator: str(r, "recordLocator"),
     airlineLocator: str(r, "airlineLocator"),
+    airline: str(r, "airline"),
     provider: pick(r.provider, PNR_PROVIDERS, "Manual"),
     status: pick(r.status, PNR_STATUSES, "Active"),
     ticketingDeadline: str(r, "ticketingDeadline"),
@@ -212,6 +215,7 @@ export async function savePnr(bookingDbId: unknown, pnrDbId: unknown, raw: unkno
   const row = {
     record_locator: v.recordLocator.trim().toUpperCase(),
     airline_locator: v.airlineLocator.trim().toUpperCase() || null,
+    airline: v.airline.trim().toUpperCase() || null,
     provider: v.provider,
     status: v.status,
     ticketing_deadline: v.ticketingDeadline ? storeLocalTime(v.ticketingDeadline) : null,
@@ -222,6 +226,34 @@ export async function savePnr(bookingDbId: unknown, pnrDbId: unknown, raw: unkno
   if (saved.error?.code === "23505") return { ok: false, message: `PNR ${row.record_locator} is already recorded for this provider.` };
   if (saved.error || !saved.data) return { ok: false, message: friendly(saved.error, "save this reservation") };
   await addEvent(supabase, orgId, booking.id, editing ? `PNR ${row.record_locator} updated (${row.status})` : `PNR ${row.record_locator} added (${row.provider})`);
+  refresh();
+  return { ok: true };
+}
+
+/**
+ * Records the result of a manual PNR check (with the airline or consolidator). The database function
+ * verify_pnr() (migration 23) stamps who and when, writes the timeline line and is audited; only admins
+ * and ticketing agents may use it. Verification is separate from the PNR's status and from tickets.
+ */
+export async function verifyPnr(bookingDbId: unknown, pnrDbId: unknown, raw: unknown): Promise<ActionResult> {
+  const ctx = await withBooking(bookingDbId);
+  if ("message" in ctx) return { ok: false, message: ctx.message };
+  const { supabase, booking } = ctx;
+  if (!isId(pnrDbId)) return { ok: false, message: "That reservation couldn't be found." };
+  const r = obj(raw);
+  const v: VerifyPnrValues = {
+    status: r.status === "Verified" || r.status === "Not verified" ? r.status : "",
+    notes: str(r, "notes"),
+  };
+  const problem = first(validateVerification(v));
+  if (problem) return { ok: false, message: problem };
+
+  // The PNR must belong to this booking (the database function checks the role and the agency).
+  const { data: pnr } = await supabase.from("pnr_records").select("id").eq("id", pnrDbId).eq("booking_id", booking.id).maybeSingle();
+  if (!pnr) return { ok: false, message: "That reservation couldn't be found on this booking." };
+
+  const { error } = await supabase.rpc("verify_pnr", { p_pnr_id: pnr.id, p_status: v.status, p_notes: v.notes.trim() || null });
+  if (error) return { ok: false, message: friendly(error, "verify this reservation") };
   refresh();
   return { ok: true };
 }
