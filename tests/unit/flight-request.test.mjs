@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AI_MODEL,
+  aiErrorLog,
+  aiFailureReason,
   DAILY_LIMIT,
   draftFromAi,
   emptyDraft,
@@ -203,13 +205,40 @@ describe("saving: only reviewed, approved details; never 'searched'", () => {
   });
 });
 
+describe("when the AI service returns an error", () => {
+  it("a refused request is 'rejected' (retrying won't help); timeouts, limits, server errors are 'unavailable'", () => {
+    for (const s of [400, 401, 403, 404, 413, 422]) assert.equal(aiFailureReason(s), "rejected", String(s));
+    for (const s of [408, 409, 429, 500, 502, 503, 529, undefined]) assert.equal(aiFailureReason(s), "unavailable", String(s));
+  });
+
+  it("logs Anthropic's explanation and request ID on one short line, with anything key-like masked", () => {
+    assert.equal(
+      aiErrorLog({ status: 400, type: "invalid_request_error", errorCode: null, requestID: "req_123", apiMessage: "Your credit balance is too low.\n Please add credit." }),
+      'status=400 type=invalid_request_error code=none request_id=req_123 message="Your credit balance is too low. Please add credit."',
+    );
+    assert.equal(aiErrorLog({}), 'status=none type=none code=none request_id=none message=""');
+    const fakeKey = "sk-ant-" + "x".repeat(24);
+    assert.ok(!aiErrorLog({ status: 401, apiMessage: `bad key ${fakeKey}` }).includes(fakeKey));
+    assert.ok(aiErrorLog({ apiMessage: "y".repeat(1000) }).length < 400);
+  });
+
+  it("agents see why: a rejection asks for the admin, an outage says try again", () => {
+    const ai = read("src/lib/ai/flight-request-ai.ts");
+    assert.match(ai, /return \{ ok: false, reason: aiFailureReason\(error\.status\) \};/);
+    const actions = read("src/lib/actions/flight-requests.ts");
+    assert.match(actions, /rejected: "The AI service rejected the request, so trying again won't help\. Ask your admin/);
+    assert.match(actions, /unavailable: "The AI service didn't respond\. Try again in a moment/);
+  });
+});
+
 describe("API key and model", () => {
   it("the key is read only on the server, from ANTHROPIC_API_KEY (never NEXT_PUBLIC_), and never logged", () => {
     const ai = read("src/lib/ai/flight-request-ai.ts");
     assert.match(ai, /process\.env\.ANTHROPIC_API_KEY/);
     assert.ok(!/NEXT_PUBLIC_ANTHROPIC|apiKey:/.test(ai), "no public variable, no key passed around");
     assert.match(ai, /if \(typeof window !== "undefined"\) throw new Error\("The AI client can only be used on the server\."\);/);
-    assert.match(ai, /console\.error\("AI flight-request reading failed:", error instanceof Anthropic\.APIError \? `\$\{error\.constructor\.name\} \$\{error\.status \?\? ""\}`/);
+    assert.match(ai, /console\.error\("AI flight-request reading failed:", aiErrorLog\(error\)\);/);
+    assert.ok(!/console\.\w+\([^)]*(process\.env|apiKey|headers)/.test(ai), "nothing key-bearing is logged");
     for (const f of ["src/components/flights/FlightRequestPanel.tsx", "src/lib/flight-request.ts"]) {
       assert.ok(!/@anthropic-ai\/sdk|ANTHROPIC_API_KEY/.test(read(f)), `${f} must not touch the SDK or key`);
     }

@@ -43,6 +43,7 @@ const REASONS: Record<string, string> = {
   refused: "The AI couldn't read this request. Fill in the details yourself.",
   incomplete: "The AI's reading was incomplete. Try a shorter request, or fill in the details yourself.",
   unreadable: "The AI's reading couldn't be used. Try again, or fill in the details yourself.",
+  rejected: "The AI service rejected the request, so trying again won't help. Ask your admin to check the AI setup, or fill in the details yourself.",
   unavailable: "The AI service didn't respond. Try again in a moment, or fill in the details yourself.",
 };
 

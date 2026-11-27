@@ -4,11 +4,11 @@
 // The text passed in has already been checked for personal data (src/lib/flight-request.ts and the
 // database, migration 25). The AI only extracts search details; it has no fares or availability.
 import Anthropic from "@anthropic-ai/sdk";
-import { AI_MODEL, EXTRACTION_SCHEMA, SYSTEM_PROMPT, userMessage } from "@/lib/flight-request";
+import { AI_MODEL, EXTRACTION_SCHEMA, SYSTEM_PROMPT, aiErrorLog, aiFailureReason, userMessage } from "@/lib/flight-request";
 
 export type AiReading =
   | { ok: true; raw: unknown; model: string; inputTokens: number; outputTokens: number }
-  | { ok: false; reason: "not-configured" | "refused" | "incomplete" | "unreadable" | "unavailable"; model?: string; inputTokens?: number; outputTokens?: number };
+  | { ok: false; reason: "not-configured" | "refused" | "incomplete" | "unreadable" | "rejected" | "unavailable"; model?: string; inputTokens?: number; outputTokens?: number };
 
 /** True when the server has an Anthropic key configured (the value itself is never exposed). */
 export function aiConfigured() {
@@ -42,8 +42,14 @@ export async function readFlightRequestWithAi(text: string, today: string): Prom
       return { ok: false, reason: "unreadable", ...usage };
     }
   } catch (error) {
-    // Typed SDK errors (auth, rate limit, server, connection): logged by class name only, never the key.
-    console.error("AI flight-request reading failed:", error instanceof Anthropic.APIError ? `${error.constructor.name} ${error.status ?? ""}` : String((error as Error)?.name));
+    if (error instanceof Anthropic.APIError) {
+      // Anthropic's explanation (status, type, code, message, request ID). Never the key, which is only ever
+      // sent in a request header. A refused request is "rejected"; timeouts, rate limits, server errors and
+      // lost connections (no status) are "unavailable".
+      console.error("AI flight-request reading failed:", aiErrorLog(error));
+      return { ok: false, reason: aiFailureReason(error.status) };
+    }
+    console.error("AI flight-request reading failed:", String((error as Error)?.name));
     return { ok: false, reason: "unavailable" };
   }
 }

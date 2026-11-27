@@ -263,3 +263,35 @@ export function searchRow(v: FlightRequestDraft, aiActionId: string, questions: 
 export function estimateCostUsd(inputTokens: number, outputTokens: number) {
   return Math.round(((inputTokens * 4 + outputTokens * 20) / 1_000_000) * 10_000) / 10_000;
 }
+
+/* ── When the AI service returns an error ─────────────────────────────────── */
+
+/**
+ * "rejected": the API refused the request itself (bad request, key, permission, model, size): trying again
+ * won't help, an admin has to fix the setup. "unavailable": a timeout, rate limit, overload, server error or
+ * lost connection (no status): trying again later can work.
+ */
+export function aiFailureReason(status: number | undefined): "rejected" | "unavailable" {
+  if (status !== undefined && status >= 400 && status < 500 && ![408, 409, 429].includes(status)) return "rejected";
+  return "unavailable";
+}
+
+export type AiErrorFields = {
+  status?: number;
+  type?: string | null;
+  errorCode?: string | null;
+  requestID?: string | null;
+  apiMessage?: string | null;
+};
+
+const KEY_LIKE_RE = /sk-ant-[\w-]+/g;
+
+/**
+ * One log line with Anthropic's own explanation of an error and the request ID its support can trace.
+ * The API key travels only in a request header and is never part of an error response; anything key-like is
+ * still masked, and the message is kept to one short line.
+ */
+export function aiErrorLog(e: AiErrorFields) {
+  const message = (e.apiMessage ?? "").replace(KEY_LIKE_RE, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 300);
+  return `status=${e.status ?? "none"} type=${e.type ?? "none"} code=${e.errorCode ?? "none"} request_id=${e.requestID ?? "none"} message="${message}"`;
+}
