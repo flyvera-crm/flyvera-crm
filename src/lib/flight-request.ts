@@ -1,15 +1,15 @@
-// AI reading of a flight request: the agent types a trip request in plain words, the AI turns it into
-// search details, and the AGENT reviews and approves them before anything is saved. Pure, unit-tested.
+// Reading a flight request: the agent types a trip request in plain words, the local reader
+// (src/lib/flight-request-parser.ts, no AI service) turns it into search details, and the AGENT reviews
+// and approves them before anything is saved. Pure, unit-tested.
 //
 // Rules this module enforces (the database repeats the important ones, migration 25):
-//  • The AI only reads the agent's words. Its output has NO fields for fares, flights, schedules or
-//    availability, so it can't invent them. Nothing here ever shows a price except the budget the agent typed.
-//  • No personal identification details are sent to the AI: e-mail addresses, phone / ID numbers,
-//    passport-style numbers, and the names of the linked customer / lead are refused before sending.
-//  • Everything the AI returns is re-checked here; anything invalid becomes a question for the agent.
+//  • The reading has NO fields for fares, flights, schedules or availability, so none can be invented.
+//    Nothing here ever shows a price except the budget the agent typed.
+//  • No personal identification details in the request text (it is kept in the log): e-mail addresses,
+//    phone / ID numbers, passport-style numbers and the linked customer's / lead's name are refused.
+//  • Every value read is re-checked here; anything invalid becomes a question for the agent.
 
-export const AI_MODEL = "claude-opus-5-5";
-export const DAILY_LIMIT = 50; // per person per day (UTC); also enforced by the database
+export const DAILY_LIMIT = 50; // readings per person per day (UTC); also enforced by the database
 export const MAX_REQUEST_CHARS = 1000;
 export const CABINS = ["Economy", "Premium economy", "Business", "First"] as const;
 export type Cabin = (typeof CABINS)[number];
@@ -43,97 +43,41 @@ export const emptyDraft: FlightRequestDraft = {
   budgetCurrency: "USD",
 };
 
-/* ── What the AI is asked for ─────────────────────────────────────────────── */
-
-/**
- * The only shape the AI may answer in (structured output). Deliberately no fare, price, flight number,
- * schedule or availability fields. Numeric and length limits are checked in code (not supported by the API).
- */
-const orNull = (schema: Record<string, unknown>, description?: string) => ({
-  anyOf: [schema, { type: "null" }],
-  ...(description ? { description } : {}),
-});
-
-export const EXTRACTION_SCHEMA = {
-  type: "object",
-  properties: {
-    origin: orNull({ type: "string" }, "IATA airport or city code (3 letters) of departure, if stated or unambiguous"),
-    destination: orNull({ type: "string" }, "IATA airport or city code (3 letters) of arrival, if stated or unambiguous"),
-    depart_on: orNull({ type: "string", format: "date" }, "Departure date, if stated"),
-    return_on: orNull({ type: "string", format: "date" }, "Return date, if stated; null for one-way or unknown"),
-    adults: orNull({ type: "integer" }),
-    children: orNull({ type: "integer" }),
-    infants: orNull({ type: "integer" }),
-    cabin: orNull({ type: "string", enum: [...CABINS] }),
-    preferred_airlines: { type: "array", items: { type: "string" }, description: "2-character IATA airline codes the agent asked for" },
-    budget_amount: orNull({ type: "number" }, "The total budget the agent stated, if any. Never a fare."),
-    budget_currency: orNull({ type: "string" }, "3-letter currency code of the stated budget"),
-    questions: { type: "array", items: { type: "string" }, description: "Short questions about anything missing or unclear" },
-  },
-  required: [
-    "origin",
-    "destination",
-    "depart_on",
-    "return_on",
-    "adults",
-    "children",
-    "infants",
-    "cabin",
-    "preferred_airlines",
-    "budget_amount",
-    "budget_currency",
-    "questions",
-  ],
-  additionalProperties: false,
-} as const;
-
-export const SYSTEM_PROMPT = [
-  "You turn a travel agent's flight request into search details for a travel CRM.",
-  "Only extract what the request says or makes unambiguous (e.g. 'Dubai' → DXB, 'London' → LON as a city code).",
-  "Resolve relative or partial dates against today's date given in the message; never pick a date in the past.",
-  "If something needed is missing or ambiguous (dates, airports, passenger counts, cabin), leave the field null",
-  "and add a short question for the agent instead of guessing.",
-  "Children are aged 2–11 and infants under 2. Default to 1 adult only if the request clearly concerns one traveller.",
-  "You do not have access to fares, schedules or availability, and you must not mention or estimate any.",
-  "Do not include names or other personal details in your answer.",
-].join(" ");
-
-export function userMessage(text: string, today: string) {
-  return `Today's date: ${today}\n\nFlight request:\n${text}`;
-}
-
-/* ── Personal data must not be sent ───────────────────────────────────────── */
+/* ── No personal data in the request ──────────────────────────────────────── */
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const DATE_LIKE_RE = /\b\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}\b/g;
 const NUMBER_RUN_RE = /\+?\d[\d\s().-]{5,}\d/g;
 const PASSPORT_LIKE_RE = /\b[A-Za-z]{1,2}\d{6,9}\b/;
 
-/** Why a request can't be sent to the AI as written, or null. Mirrors the database check (migration 25). */
+/**
+ * Why a request can't be read as written, or null. The text is kept in the reading log, so only trip
+ * details belong in it. Mirrors the database check (migration 25).
+ */
 export function personalDataProblem(text: string, linkedNames: string[] = []): string | null {
-  if (EMAIL_RE.test(text)) return "Remove the e-mail address before asking the AI.";
+  if (EMAIL_RE.test(text)) return "Remove the e-mail address: only trip details belong in the request.";
   const withoutDates = text.replace(DATE_LIKE_RE, " ");
   for (const run of withoutDates.match(NUMBER_RUN_RE) ?? []) {
-    if (run.replace(/\D/g, "").length >= 7) return "Remove phone numbers and ID numbers before asking the AI.";
+    if (run.replace(/\D/g, "").length >= 7) return "Remove phone numbers and ID numbers: only trip details belong in the request.";
   }
-  if (PASSPORT_LIKE_RE.test(text)) return "Remove passport or other document numbers before asking the AI.";
+  if (PASSPORT_LIKE_RE.test(text)) return "Remove passport or other document numbers: only trip details belong in the request.";
   const words = new Set(text.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").split(/[^a-z']+/).filter(Boolean));
   for (const full of linkedNames) {
     for (const part of full.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").split(/[^a-z']+/)) {
-      if (part.length >= 3 && words.has(part)) return "Remove the customer's name: the AI only needs the trip details.";
+      if (part.length >= 3 && words.has(part)) return "Remove the customer's name: link the lead or customer below instead.";
     }
   }
   return null;
 }
 
-/** Checks the request text before anything is sent. */
+/** Checks the request text before it is read or logged. */
 export function requestTextProblem(text: unknown, linkedNames: string[] = []): string | null {
   if (typeof text !== "string" || !text.trim()) return "Describe the trip first.";
   if (text.length > MAX_REQUEST_CHARS) return `Keep the request under ${MAX_REQUEST_CHARS} characters.`;
   return personalDataProblem(text, linkedNames);
 }
 
-/* ── Checking the AI's reading ────────────────────────────────────────────── */
+/* ── Checking the reading ─────────────────────────────────────────────────── */
 
 const IATA_RE = /^[A-Z]{3}$/;
 const AIRLINE_RE = /^[A-Z0-9]{2}$/;
@@ -143,10 +87,10 @@ const isRealDate = (s: string) => DATE_RE.test(s) && !Number.isNaN(Date.parse(`$
 const intOr = (v: unknown, fallback: number | null) => (typeof v === "number" && Number.isInteger(v) ? v : fallback);
 
 /**
- * Turns the AI's raw answer into a draft for the agent, keeping only valid values. Anything invalid or
+ * Turns the reader's raw answer into a draft for the agent, keeping only valid values. Anything invalid or
  * missing is left blank (or at a safe default) with a question for the agent. Never throws.
  */
-export function draftFromAi(raw: unknown, today: string): { draft: FlightRequestDraft; questions: string[] } {
+export function draftFromReading(raw: unknown, today: string): { draft: FlightRequestDraft; questions: string[] } {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const questions: string[] = [];
   const ask = (q: string) => questions.includes(q) || questions.push(q);
@@ -235,7 +179,10 @@ export function validateDraft(v: FlightRequestDraft, today: string) {
   return e;
 }
 
-/** The flight_searches row for reviewed, approved details (provider stays "Manual": not searched by a supplier). */
+/**
+ * The flight_searches row for reviewed, approved details (provider stays "Manual": not searched by a supplier).
+ * `aiActionId` is the reading's id in the log table (ai_actions); the name is kept for searches saved earlier.
+ */
 export function searchRow(v: FlightRequestDraft, aiActionId: string, questions: string[]) {
   const airlines = v.preferredAirlines.split(",").map((a) => a.trim().toUpperCase()).filter(Boolean);
   const budget = v.budgetAmount.trim() ? Number(v.budgetAmount.replace(/[,\s]/g, "")) : null;
@@ -249,7 +196,7 @@ export function searchRow(v: FlightRequestDraft, aiActionId: string, questions: 
     infants: Number(v.infants),
     cabin: v.cabin,
     request: {
-      source: "AI reading, reviewed and approved by the agent",
+      source: "Request reader, reviewed and approved by the agent",
       ai_action_id: aiActionId,
       preferred_airlines: airlines,
       budget: budget === null ? null : { amount: budget, currency: v.budgetCurrency.trim().toUpperCase() },
@@ -257,41 +204,4 @@ export function searchRow(v: FlightRequestDraft, aiActionId: string, questions: 
       searched: false, // no live flight supplier connected: nothing was searched
     },
   };
-}
-
-/** Approximate cost of one reading at Claude Opus 5.5 list prices ($4 / $20 per million tokens). */
-export function estimateCostUsd(inputTokens: number, outputTokens: number) {
-  return Math.round(((inputTokens * 4 + outputTokens * 20) / 1_000_000) * 10_000) / 10_000;
-}
-
-/* ── When the AI service returns an error ─────────────────────────────────── */
-
-/**
- * "rejected": the API refused the request itself (bad request, key, permission, model, size): trying again
- * won't help, an admin has to fix the setup. "unavailable": a timeout, rate limit, overload, server error or
- * lost connection (no status): trying again later can work.
- */
-export function aiFailureReason(status: number | undefined): "rejected" | "unavailable" {
-  if (status !== undefined && status >= 400 && status < 500 && ![408, 409, 429].includes(status)) return "rejected";
-  return "unavailable";
-}
-
-export type AiErrorFields = {
-  status?: number;
-  type?: string | null;
-  errorCode?: string | null;
-  requestID?: string | null;
-  apiMessage?: string | null;
-};
-
-const KEY_LIKE_RE = /sk-ant-[\w-]+/g;
-
-/**
- * One log line with Anthropic's own explanation of an error and the request ID its support can trace.
- * The API key travels only in a request header and is never part of an error response; anything key-like is
- * still masked, and the message is kept to one short line.
- */
-export function aiErrorLog(e: AiErrorFields) {
-  const message = (e.apiMessage ?? "").replace(KEY_LIKE_RE, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 300);
-  return `status=${e.status ?? "none"} type=${e.type ?? "none"} code=${e.errorCode ?? "none"} request_id=${e.requestID ?? "none"} message="${message}"`;
 }

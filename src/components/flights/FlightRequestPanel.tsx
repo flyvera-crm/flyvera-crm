@@ -1,8 +1,8 @@
 "use client";
 
-// "Describe the trip": the AI reads the agent's words into search details that the AGENT reviews,
-// edits and approves before anything is saved. No fares, prices or availability are shown here
-// (only the budget the agent typed). Customer details stay in the CRM and are never sent to the AI.
+// "Describe the trip": the request reader (on our own server, no AI service) turns the agent's words into
+// search details that the AGENT reviews, edits and approves before anything is saved. No fares, prices or
+// availability are shown here (only the budget the agent typed). Customer details are linked, never typed.
 import { useState, useTransition } from "react";
 import { discardFlightRequest, readFlightRequest, saveFlightRequest } from "@/lib/actions/flight-requests";
 import { callAction } from "@/lib/action-call";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/format";
 
 type Reading = { actionId: string; draft: FlightRequestDraft; questions: string[] };
 
-export function FlightRequestPanel({ configured, initialRemaining, today }: { configured: boolean; initialRemaining: number; today: string }) {
+export function FlightRequestPanel({ initialRemaining, today }: { initialRemaining: number; today: string }) {
   const toast = useToast();
   const { customers } = useCustomers();
   const leads = useLeadList();
@@ -44,7 +44,7 @@ export function FlightRequestPanel({ configured, initialRemaining, today }: { co
   function read() {
     setMessage(null);
     start(async () => {
-      const r = await callAction(() => readFlightRequest(text, link), "AI flight request");
+      const r = await callAction(() => readFlightRequest(text, link), "Read flight request");
       if ("remaining" in r && typeof r.remaining === "number") setRemaining(r.remaining);
       if (!r.ok) return setMessage(r.message);
       setReading({ actionId: r.actionId, draft: r.draft, questions: r.questions });
@@ -70,7 +70,7 @@ export function FlightRequestPanel({ configured, initialRemaining, today }: { co
   function discard() {
     if (!reading) return;
     start(async () => {
-      const r = await callAction(() => discardFlightRequest(reading.actionId), "Discard AI reading");
+      const r = await callAction(() => discardFlightRequest(reading.actionId), "Discard reading");
       toast({ tone: "info", message: <p>{r.message}</p> });
       reset();
     });
@@ -78,11 +78,9 @@ export function FlightRequestPanel({ configured, initialRemaining, today }: { co
 
   return (
     <Card>
-      <CardHeader title="Describe the trip" subtitle="The AI reads your request into search details for you to review. It never shows fares or availability." />
+      <CardHeader title="Describe the trip" subtitle="Your request is read into search details for you to review, here in the CRM. It never shows fares or availability." />
       <div className="space-y-4 p-5 sm:p-6">
-        {!configured ? (
-          <p className="text-sm text-navy-500" data-testid="ai-not-configured">AI request reading isn&apos;t configured yet. Ask your admin.</p>
-        ) : !reading ? (
+        {!reading ? (
           <>
             <p role="note" className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
               <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
@@ -90,7 +88,7 @@ export function FlightRequestPanel({ configured, initialRemaining, today }: { co
                 Only trip details. <span className="font-semibold">Don&apos;t include names, phone numbers, e-mail addresses, passport or other ID numbers</span>: link the lead or customer below instead (it stays in the CRM).
               </span>
             </p>
-            <Field id="tripText" label="Trip request" hint={`${text.length}/${MAX_REQUEST_CHARS} · ${remaining} of ${DAILY_LIMIT} AI readings left today`}>
+            <Field id="tripText" label="Trip request" hint={`${text.length}/${MAX_REQUEST_CHARS} · ${remaining} of ${DAILY_LIMIT} readings left today`}>
               <textarea
                 id="tripText"
                 rows={3}
@@ -114,7 +112,7 @@ export function FlightRequestPanel({ configured, initialRemaining, today }: { co
         ) : (
           draft && (
             <>
-              <p className="text-sm text-navy-500">Check and correct the AI&apos;s reading. Nothing is saved until you approve it.</p>
+              <p className="text-sm text-navy-500">Check and correct the reading, and answer any questions below. Nothing is saved until you approve it.</p>
               {reading.questions.length > 0 && (
                 <ul className="list-disc space-y-1 rounded-xl bg-sky-brand-light/40 py-2.5 pl-8 pr-3 text-sm text-navy-700" aria-label="Open questions">
                   {reading.questions.map((q) => (

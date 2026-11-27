@@ -141,20 +141,22 @@ select vault.create_secret('<long random value>', 'flyvera_document_key', 'Passp
 ```
 Losing this key makes stored passport numbers unreadable: back it up in your password manager.
 
-## AI flight requests (migration 25)
+## Flight-request readings (migration 25)
 On the Flights page, admins, sales managers, sales agents and ticketing agents (the roles that may create
-flight searches) can type a trip request; the AI turns it into search details that the agent reviews before
-anything is saved. The AI never produces fares or availability.
+flight searches) can type a trip request; the CRM's own reader (`src/lib/flight-request-parser.ts`, no AI
+service, no key, no cost) turns it into search details plus questions about anything missing or unclear,
+which the agent reviews before anything is saved. It never produces fares, availability, PNRs or tickets.
 - **Logged:** every reading is an `ai_actions` row of kind `Flight request` (Proposed → Applied / Rejected,
-  or Failed). `flight_search_id` links the search saved after review; it clears if that search is deleted,
-  and the reading stays logged.
+  or Failed) with `model = 'local-parser-v1'` and `cost_usd = 0` (readings made earlier by the AI keep
+  `claude-opus-5-5`). `flight_search_id` links the search saved after review; it clears if that search is
+  deleted, and the reading stays logged.
 - **Limited:** 50 readings per person per day (UTC), counted in the database one request at a time per
   person, so simultaneous requests can't exceed it.
-- **No personal data:** the text sent (`input.text`) may not contain e-mail addresses, phone or other long
+- **No personal data:** the logged text (`input.text`) may not contain e-mail addresses, phone or other long
   ID numbers, or passport-style numbers; dates are allowed. The app checks first (and also keeps linked
-  customer/lead names out); the trigger is the backstop, including when the text is changed later.
+  customer/lead names out); the trigger is the backstop, including when the text is changed later. (The
+  trigger's message still says "before asking the AI"; rewording it would need a new migration.)
 - The service role is not limited. Nobody can call `private.guard_ai_flight_request()` directly.
-- The Anthropic key (`ANTHROPIC_API_KEY`) is server-only; see [`docs/GO-LIVE.md`](../GO-LIVE.md).
 
 ## Development seed
 `seed.sql` reproduces the app's demo data (24 customers, 18 leads, 8 quotations, 8 bookings, 9 payments)
@@ -172,15 +174,15 @@ Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations 
 in 26 sections: structure, seed totals vs the app, relationships and money rules, agency isolation, each of
 the six roles, passport protection, audit log, storage, and the rules of migrations 14–25 (archiving,
 booking creation and payment corrections, ticketing, invoices, refund requests, team & access, dashboard
-data, agency settings, gap fills, quotation answer lock, PNR verification, supplier-safe flights, AI flight
-requests).
+data, agency settings, gap fills, quotation answer lock, PNR verification, supplier-safe flights,
+flight-request readings).
 
 ```
 npm run test:unit
 ```
 Runs the unit tests for the app's pure business rules (dashboard figures, CSV exports, settings, suppliers,
-lead activity, invoice wording, security headers, navigation, PNR verification, flight suppliers, AI flight
-requests) with Node's test runner — no database needed (198 tests).
+lead activity, invoice wording, security headers, navigation, PNR verification, flight suppliers, the
+flight-request reader) with Node's test runner — no database needed (213 tests).
 
 ### What PGlite tests do NOT cover
 PGlite is real PostgreSQL, but `supabase/tests/supabase-shim.sql` only imitates Supabase. Not tested:

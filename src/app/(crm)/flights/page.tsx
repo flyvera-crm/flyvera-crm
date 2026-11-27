@@ -6,14 +6,14 @@ import { flightRequestStatus } from "@/lib/actions/flight-requests";
 
 export const metadata: Metadata = { title: "Flights" };
 
-// No search form until an authorised supplier is connected (src/lib/flight-suppliers.ts). The AI panel
-// only reads a request into details the agent reviews; it never shows fares or availability.
+// No search form until an authorised supplier is connected (src/lib/flight-suppliers.ts). The request
+// panel only reads a request into details the agent reviews; it never shows fares or availability.
 export default async function Page() {
-  const ai = await flightRequestStatus();
+  const reader = await flightRequestStatus();
   return (
     <div className="space-y-6">
       <FlightSupplierStatus suppliers={connectedSuppliers().map(({ name, kind }) => ({ name, kind }))} />
-      {ai.allowed && <FlightRequestPanel configured={ai.configured} initialRemaining={ai.remaining} today={new Date().toISOString().slice(0, 10)} />}
+      {reader.allowed && <FlightRequestPanel initialRemaining={reader.remaining} today={new Date().toISOString().slice(0, 10)} />}
     </div>
   );
 }

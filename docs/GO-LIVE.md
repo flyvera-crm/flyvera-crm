@@ -15,7 +15,7 @@ is described. Nothing here is automated.
 - [ ] All checks pass on `main`: `npm run test:unit`, `npm run db:test`, `npx tsc --noEmit`, `npx eslint src supabase tests`, `npm run build`.
 - [ ] The staging browser tests pass for every role.
 - [ ] A password manager entry is ready for: the production database password, the publishable key, the
-      service-role key, the Server Actions key, the Anthropic API key, the Vault passport key, and the SMTP credentials.
+      service-role key, the Server Actions key, the Vault passport key, and the SMTP credentials.
 - [ ] Production Supabase project: on a plan with **daily backups / point-in-time recovery** switched on.
 - [ ] The **"before" DNS snapshot** of `flyvera.us` is recorded (section 1, step 1).
 
@@ -35,13 +35,13 @@ double-check the website name before using any menu.
 | `NEXT_PUBLIC_SUPABASE_URL` | Production project → Project Settings → API | no (public) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Production project → Project Settings → API Keys (publishable) | no (public; RLS protects data) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Production project → Project Settings → API Keys (secret / service_role) | **yes** — Hostinger's environment variables only, never `NEXT_PUBLIC_`, never committed |
-| `ANTHROPIC_API_KEY` | Anthropic Console → API keys (optional: without it, the AI flight-request panel says it isn't configured) | **yes** — same rules as the service-role key |
 | `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | Generate once (below); base64 of 16, 24 or 32 random bytes (32 recommended). **Required: the build stops without it** | **yes** — same rules as the service-role key |
 
 The service-role key is used on the server only, to send invitation emails and to remove revoked,
 unaccepted logins — always after checking that the caller is an admin.
-The Anthropic key is read on the server only (`src/lib/ai/flight-request-ai.ts`), to turn a typed trip
-request into flight search details on the Flights page (migration 25). It is never sent to the browser.
+No AI service or AI key is needed: the Flights page reads typed trip requests with the CRM's own code
+(`src/lib/flight-request-parser.ts`). If `ANTHROPIC_API_KEY` is still set in Hostinger from an earlier
+version, it is no longer used and can be deleted.
 
 The Server Actions key keeps the app's action IDs the same from one build to the next. Without it, every
 deploy gets a random key and pages already open in a browser fail with "Server Action not found" (409);
@@ -144,7 +144,7 @@ hPanel → Domains → DNS / Nameservers.
 | Process limit shared by **all** sites on the plan (Business: 120; a Next.js app uses ~10–11) | If reached, sites can answer **503**. Watch the plan's usage graphs; Cloud plans raise the limit |
 | RAM / CPU for Node apps not published | Watch the CPU/RAM graphs after launch |
 | App sleeps after a period without traffic | The first request afterwards is slower; no data is lost |
-| 120-second limit per request | Fine (an invoice PDF takes about a second; an AI flight-request reading is capped at a 30-second timeout with one retry) |
+| 120-second limit per request | Fine (an invoice PDF takes about a second; reading a flight request takes a few milliseconds) |
 | No inbound WebSockets, no always-running background workers | Not used by the CRM today; matters for future WhatsApp/AI features |
 | Builds: 15 min install + 15 min build; up to 2 earlier versions kept | Ample (about a minute locally) |
 
@@ -258,10 +258,10 @@ values ('<organization id>', 'louispeterlouis00@gmail.com', '<Owner Name>', 'adm
 - [ ] Customer → quotation → print (letterhead shows) → accept → booking (deposit/balance dates follow Settings).
 - [ ] Record a payment → receipt prints → create and issue an invoice → PDF downloads with "How to pay".
 - [ ] Add a passport (proves the Vault key works) and reveal it (an audit entry appears).
-- [ ] **Flights:** as an admin, sales or ticketing user, the AI flight-request panel shows the readings left
-      today (50 per person); a typed request with no personal details becomes search details to review before
-      saving; a request containing an e-mail address or phone number is refused. A finance or support
-      colleague doesn't see the panel. (Without `ANTHROPIC_API_KEY` the panel only says it isn't configured.)
+- [ ] **Flights:** as an admin, sales or ticketing user, the "Describe the trip" panel shows the readings left
+      today (50 per person); a typed request with no personal details becomes search details (plus questions
+      about anything unclear) to review before saving; a request containing an e-mail address or phone number
+      is refused. A finance or support colleague doesn't see the panel.
 - [ ] Dashboard shows the payment; a support-role colleague sees no amounts.
 - [ ] Response headers on any page include `X-Frame-Options: DENY` and `Strict-Transport-Security` (browser
       dev tools → Network → the page → Headers).
