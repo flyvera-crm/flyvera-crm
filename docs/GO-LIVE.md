@@ -264,6 +264,7 @@ values ('<organization id>', 'louispeterlouis00@gmail.com', '<Owner Name>', 'adm
       is refused. A finance or support colleague doesn't see the panel. Also try a multi-city request
       ("Dubai to London on 15 Jan, then London to Paris on 20 Jan") and one with baggage and fare conditions
       ("2 x 23kg, refundable, direct"): they are saved as the customer's requests, never as allowances or fares.
+      After saving, each one appears at once under **Saved searches** on the same page.
 - [ ] Dashboard shows the payment; a support-role colleague sees no amounts.
 - [ ] Response headers on any page include `X-Frame-Options: DENY` and `Strict-Transport-Security` (browser
       dev tools → Network → the page → Headers).

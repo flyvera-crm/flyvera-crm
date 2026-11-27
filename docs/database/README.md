@@ -156,6 +156,10 @@ allowances, PNRs or tickets.
 - **Saved:** the first flight fills `flight_searches`' columns; the rest of the customer's request
   (further flights, flexibility, stops, connections, times, `baggage_requested`,
   `fare_conditions_requested`, notes, open questions) is kept in `flight_searches.request`. No schema change.
+- **Viewed again:** Flights page → **Saved searches** (below "Describe the trip"), newest first, latest 50;
+  click a search to see every flight, preference, note, open question, the typed request and the linked lead
+  or customer. Read as the signed-in user, so Row Level Security decides who sees which searches
+  (`src/lib/data/flight-searches.ts`).
 - **Logged:** every reading is an `ai_actions` row of kind `Flight request` (Proposed → Applied / Rejected,
   or Failed) with `model = 'local-parser-v2'` (`local-parser-v1` for readings from the first version) and
   `cost_usd = 0` (readings made earlier by the AI keep `claude-opus-5-5`). `flight_search_id` links the
@@ -192,7 +196,7 @@ npm run test:unit
 ```
 Runs the unit tests for the app's pure business rules (dashboard figures, CSV exports, settings, suppliers,
 lead activity, invoice wording, security headers, navigation, PNR verification, flight suppliers, the
-flight-request reader) with Node's test runner — no database needed (237 tests).
+flight-request reader) with Node's test runner — no database needed (246 tests).
 
 ### What PGlite tests do NOT cover
 PGlite is real PostgreSQL, but `supabase/tests/supabase-shim.sql` only imitates Supabase. Not tested:
