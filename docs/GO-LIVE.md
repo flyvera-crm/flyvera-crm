@@ -15,7 +15,7 @@ is described. Nothing here is automated.
 - [ ] All checks pass on `main`: `npm run test:unit`, `npm run db:test`, `npx tsc --noEmit`, `npx eslint src supabase tests`, `npm run build`.
 - [ ] The staging browser tests pass for every role.
 - [ ] A password manager entry is ready for: the production database password, the publishable key, the
-      service-role key, the Vault passport key, and the SMTP credentials.
+      service-role key, the Server Actions key, the Anthropic API key, the Vault passport key, and the SMTP credentials.
 - [ ] Production Supabase project: on a plan with **daily backups / point-in-time recovery** switched on.
 - [ ] The **"before" DNS snapshot** of `flyvera.us` is recorded (section 1, step 1).
 
@@ -36,11 +36,21 @@ double-check the website name before using any menu.
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Production project → Project Settings → API Keys (publishable) | no (public; RLS protects data) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Production project → Project Settings → API Keys (secret / service_role) | **yes** — Hostinger's environment variables only, never `NEXT_PUBLIC_`, never committed |
 | `ANTHROPIC_API_KEY` | Anthropic Console → API keys (optional: without it, the AI flight-request panel says it isn't configured) | **yes** — same rules as the service-role key |
+| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | Generate once (below); base64 of 16, 24 or 32 random bytes (32 recommended). **Required: the build stops without it** | **yes** — same rules as the service-role key |
 
 The service-role key is used on the server only, to send invitation emails and to remove revoked,
 unaccepted logins — always after checking that the caller is an admin.
 The Anthropic key is read on the server only (`src/lib/ai/flight-request-ai.ts`), to turn a typed trip
 request into flight search details on the Flights page (migration 25). It is never sent to the browser.
+
+The Server Actions key keeps the app's action IDs the same from one build to the next. Without it, every
+deploy gets a random key and pages already open in a browser fail with "Server Action not found" (409);
+`scripts/check-build-env.mjs` stops `npm run build` when it is missing or malformed (it never prints the
+value). Generate it once, store it in the password manager, and **keep the same value on every deploy**:
+```
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+Changing it later only makes open pages fail once (users reload); it doesn't affect data.
 Use the **production** project's values here — never staging's, and never upload the local `.env.local`
 (it holds staging values).
 
@@ -98,7 +108,7 @@ git push -u origin production
    | Package manager | npm (detected from `package-lock.json`) |
    | Build script | `build` |
    | Output directory | `.next` (entry file: not used for Next.js) |
-5. **Environment variables — before the first build.** Add the three variables above (one by one; don't use
+5. **Environment variables — before the first build.** Add the variables above (one by one; don't use
    "Import .env" with a local file). `NEXT_PUBLIC_*` values are built into the app, so they must exist before
    the build; any later change to them needs a redeploy (saving variables in hPanel redeploys).
 6. **Deploy**, and watch the build log.
