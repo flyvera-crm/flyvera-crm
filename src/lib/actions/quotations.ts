@@ -25,6 +25,7 @@ import { confirmQuoteStatus, planStatusChange, QUOTE_CHANGED_MESSAGE } from "@/l
 import { quoteSaveLogLine, type QuoteSaveOutcome } from "@/lib/quote-save-log";
 import { quoteStatusLogLine, type QuoteStatusOutcome } from "@/lib/action-log";
 import { newRequestId } from "@/lib/stage-change-log";
+import { sessionCookieState, startActionTrace } from "@/lib/trace-server";
 
 export type SaveQuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string; fieldErrors?: QuoteMessages };
 export type QuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string };
@@ -166,44 +167,56 @@ async function saveItems(supabase: SupabaseClient, orgId: string, quoteId: strin
 
 /* ─────────────────────────── status & duplicate ─────────────────────────── */
 
-export async function setQuoteStatus(dbId: unknown, status: unknown): Promise<QuoteResult> {
-  // Diagnostic: one server-log line per call (random request ID, requested status, outcome, the database's code).
+export async function setQuoteStatus(dbId: unknown, status: unknown, traceId?: unknown): Promise<QuoteResult> {
+  // Diagnostics (logging only): stage lines tied to the browser's click by its trace ID, plus the outcome line
+  // (random request ID, requested status, outcome, the database's code).
+  const trace = startActionTrace("quote-status", traceId, { to: status });
   const requestId = newRequestId();
   const done = (outcome: QuoteStatusOutcome, result: QuoteResult, code?: string) => {
     console.info(quoteStatusLogLine({ requestId, to: status, outcome, code }));
+    trace.log("exit", { outcome, quote: code });
     return result;
   };
 
-  if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return done("not-found", { ok: false, message: "That quotation couldn't be found." });
-  if (status !== "Sent" && status !== "Accepted" && status !== "Declined") return done("invalid", { ok: false, message: "That status isn't valid." });
+  try {
+    if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return done("not-found", { ok: false, message: "That quotation couldn't be found." });
+    if (status !== "Sent" && status !== "Accepted" && status !== "Declined") return done("invalid", { ok: false, message: "That status isn't valid." });
 
-  const supabase = await createClient();
-  const { data: current } = await supabase
-    .from("quotations")
-    .select("id, status, sent_at")
-    .eq("id", dbId)
-    .is("deleted_at", null)
-    .maybeSingle<{ id: string; status: QuoteStatus; sent_at: string | null }>();
-  if (!current) return done("not-found", { ok: false, message: "This quotation no longer exists, or you can't change it." });
-  const plan = planStatusChange(current, status, new Date().toISOString());
-  if (!plan.ok) return done("invalid", plan);
+    trace.log("session", { session: await sessionCookieState() }); // permissions are checked by Row Level Security
+    const supabase = await createClient();
+    const { data: current } = await supabase
+      .from("quotations")
+      .select("id, status, sent_at")
+      .eq("id", dbId)
+      .is("deleted_at", null)
+      .maybeSingle<{ id: string; status: QuoteStatus; sent_at: string | null }>();
+    trace.log("db-read", { db: current ? "found" : "missing" });
+    if (!current) return done("not-found", { ok: false, message: "This quotation no longer exists, or you can't change it." });
+    const plan = planStatusChange(current, status, new Date().toISOString());
+    if (!plan.ok) return done("invalid", plan);
 
-  // Applies only if the status is still the one checked above, and must report the changed row:
-  // a refused or overtaken update changes nothing and is never reported as saved.
-  const { data: changed, error } = await supabase
-    .from("quotations")
-    .update(plan.update)
-    .eq("id", dbId)
-    .eq("status", current.status)
-    .select("id")
-    .maybeSingle();
-  if (error) return done("update-failed", { ok: false, message: failure(error, "change this quotation").message });
-  if (!changed) return done("changed", { ok: false, message: QUOTE_CHANGED_MESSAGE });
-  const quote = await loadQuote(supabase, dbId);
-  refresh();
-  if (!quote) return done("not-found", { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." });
-  const confirmed = confirmQuoteStatus({ ok: true, quote }, status);
-  return done(confirmed.ok ? "ok" : "update-failed", confirmed, quote.id);
+    // Applies only if the status is still the one checked above, and must report the changed row:
+    // a refused or overtaken update changes nothing and is never reported as saved.
+    trace.log("db-start");
+    const { data: changed, error } = await supabase
+      .from("quotations")
+      .update(plan.update)
+      .eq("id", dbId)
+      .eq("status", current.status)
+      .select("id")
+      .maybeSingle();
+    trace.log("db-end", error ? { db: "error", code: error.code } : { db: changed ? "ok" : "no-row" });
+    if (error) return done("update-failed", { ok: false, message: failure(error, "change this quotation").message });
+    if (!changed) return done("changed", { ok: false, message: QUOTE_CHANGED_MESSAGE });
+    const quote = await loadQuote(supabase, dbId);
+    refresh();
+    if (!quote) return done("not-found", { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." });
+    const confirmed = confirmQuoteStatus({ ok: true, quote }, status);
+    return done(confirmed.ok ? "ok" : "update-failed", confirmed, quote.id);
+  } catch (err) {
+    trace.threw(err);
+    throw err;
+  }
 }
 
 /** Copies a quotation (and its items) into a new Draft that's valid from today. */

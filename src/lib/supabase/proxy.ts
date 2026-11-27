@@ -7,6 +7,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseEnv } from "./env";
+import { actionIdPrefix, edgeRequestId, routePattern, traceLine } from "@/lib/trace";
 
 /** Only for signed-out visitors (signed-in users are sent to the dashboard). */
 const PUBLIC_PATHS = ["/login", "/forgot-password"];
@@ -37,7 +38,28 @@ export async function updateSession(request: NextRequest) {
   const signedIn = Boolean(data?.claims?.sub);
 
   const path = request.nextUrl.pathname;
-  if (OPEN_PATHS.some((p) => path === p || path.startsWith(p + "/"))) return response;
+  // Diagnostic: Server Action requests only (crm-trace "proxy" line; no cookies, tokens or record codes).
+  const traceAction = (decision: "open" | "next" | "redirect-login" | "redirect-dashboard") => {
+    const actionId = request.headers.get("next-action");
+    if (!actionId) return;
+    console.info(
+      traceLine("proxy", {
+        action_id: actionIdPrefix(actionId),
+        method: request.method,
+        route: routePattern(path),
+        signed_in: signedIn ? "yes" : "no",
+        decision,
+        forwarded: request.headers.has("x-action-forwarded") ? "yes" : "no",
+        edge: edgeRequestId(request.headers.get("x-hcdn-request-id")),
+        pid: typeof process !== "undefined" ? process.pid : undefined,
+      }),
+    );
+  };
+
+  if (OPEN_PATHS.some((p) => path === p || path.startsWith(p + "/"))) {
+    traceAction("open");
+    return response;
+  }
   const isPublic = PUBLIC_PATHS.some((p) => path === p || path.startsWith(p + "/"));
 
   if (!signedIn && !isPublic) {
@@ -45,6 +67,7 @@ export async function updateSession(request: NextRequest) {
     to.pathname = "/login";
     to.search = "";
     if (path !== "/") to.searchParams.set("next", path + request.nextUrl.search);
+    traceAction("redirect-login");
     return withCookies(NextResponse.redirect(to), response);
   }
 
@@ -52,9 +75,11 @@ export async function updateSession(request: NextRequest) {
     const to = request.nextUrl.clone();
     to.pathname = "/dashboard";
     to.search = "";
+    traceAction("redirect-dashboard");
     return withCookies(NextResponse.redirect(to), response);
   }
 
+  traceAction("next");
   return response;
 }
 

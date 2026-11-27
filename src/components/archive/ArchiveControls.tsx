@@ -10,6 +10,7 @@ import { Icon } from "@/components/icons";
 import { useToast } from "@/components/ui/Toast";
 import { cn, formatDate } from "@/lib/format";
 import { callAction } from "@/lib/action-call";
+import { clientOutcome, newTraceId, traceLine } from "@/lib/trace";
 
 const LIST: Record<ArchiveKind, { href: string; noun: string; plural: string; detail: (code: string) => string }> = {
   customer: { href: "/customers", noun: "customer", plural: "customers", detail: (c) => `/customers/${c}` },
@@ -27,8 +28,12 @@ export function ArchiveButton({ kind, dbId, name, className, onArchived }: { kin
 
   function confirm() {
     startBusy(async () => {
+      // Diagnostic (browser console): one trace ID ties this click to the server's crm-trace lines.
+      const trace = newTraceId();
+      console.info(traceLine("client-start", { action: "archive", trace, kind }));
       // A failed request (network, redeploy) becomes a message instead of a crash; answers are unchanged.
-      const r = await callAction(() => archiveRecord(kind, dbId), "Archive");
+      const r = await callAction(() => archiveRecord(kind, dbId, trace), "Archive");
+      console.info(traceLine("client-end", { action: "archive", trace, kind, outcome: clientOutcome(r) }));
       toast({ tone: r.ok ? undefined : "info", message: <p>{r.message}</p> });
       setOpen(false);
       if (!r.ok) return;

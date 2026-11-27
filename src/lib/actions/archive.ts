@@ -10,6 +10,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { archiveLogLine, type ArchiveOutcome } from "@/lib/action-log";
 import { newRequestId } from "@/lib/stage-change-log";
+import { sessionCookieState, startActionTrace } from "@/lib/trace-server";
 
 export type ArchiveKind = "customer" | "lead" | "quotation";
 export type ArchiveResult = { ok: true; message: string } | { ok: false; message: string };
@@ -20,22 +21,32 @@ const KINDS: ArchiveKind[] = ["customer", "lead", "quotation"];
 const TABLE: Record<ArchiveKind, string> = { customer: "customers", lead: "leads", quotation: "quotations" };
 const NOUN: Record<ArchiveKind, string> = { customer: "customer", lead: "lead", quotation: "quotation" };
 
-export async function archiveRecord(kind: unknown, dbId: unknown): Promise<ArchiveResult> {
-  // Diagnostic: one server-log line per call (random request ID, record kind, outcome; no IDs or names).
+export async function archiveRecord(kind: unknown, dbId: unknown, traceId?: unknown): Promise<ArchiveResult> {
+  // Diagnostics (logging only): stage lines tied to the browser's click by its trace ID, plus the outcome line.
+  const trace = startActionTrace("archive", traceId, { kind });
   const requestId = newRequestId();
   const done = (outcome: ArchiveOutcome, result: ArchiveResult) => {
     console.info(archiveLogLine({ requestId, kind, outcome }));
+    trace.log("exit", { outcome });
     return result;
   };
 
-  if (!KINDS.includes(kind as ArchiveKind) || typeof dbId !== "string" || !UUID_RE.test(dbId))
-    return done("invalid", { ok: false, message: "That record couldn't be found." });
-  const k = kind as ArchiveKind;
-  const supabase = await createClient();
-  const { error } = await supabase.rpc(`archive_${k}`, { [`p_${k}_id`]: dbId });
-  if (error) return done(isRefusal(error) ? "refused" : "failed", { ok: false, message: friendly(error, `archive this ${NOUN[k]}`) });
-  refresh();
-  return done("ok", { ok: true, message: `The ${NOUN[k]} was archived. An admin can restore it.` });
+  try {
+    if (!KINDS.includes(kind as ArchiveKind) || typeof dbId !== "string" || !UUID_RE.test(dbId))
+      return done("invalid", { ok: false, message: "That record couldn't be found." });
+    const k = kind as ArchiveKind;
+    trace.log("session", { session: await sessionCookieState() }); // permissions are checked by the database function
+    const supabase = await createClient();
+    trace.log("db-start");
+    const { error } = await supabase.rpc(`archive_${k}`, { [`p_${k}_id`]: dbId });
+    trace.log("db-end", error ? { db: "error", code: error.code } : { db: "ok" });
+    if (error) return done(isRefusal(error) ? "refused" : "failed", { ok: false, message: friendly(error, `archive this ${NOUN[k]}`) });
+    refresh();
+    return done("ok", { ok: true, message: `The ${NOUN[k]} was archived. An admin can restore it.` });
+  } catch (err) {
+    trace.threw(err);
+    throw err;
+  }
 }
 
 /** The database said no (permission or a business rule), as opposed to any other error. Log category only. */

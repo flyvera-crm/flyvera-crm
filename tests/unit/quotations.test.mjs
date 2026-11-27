@@ -103,7 +103,7 @@ describe("the browser never loses a failure (no crash, the form stays)", () => {
     const actions = read("src/components/quotations/quote-actions.tsx");
     const view = read("src/components/quotations/QuoteView.tsx");
     assert.match(builder, /await callAction\(\(\) => saveQuote\(\{ dbId: existing\?\.dbId \}, values\), "Quotation save"\)/);
-    assert.match(actions, /confirmQuoteStatus\(await callAction\(\(\) => setQuoteStatus\(dbId, status\), "Quotation status change"\), status\)/);
+    assert.match(actions, /confirmQuoteStatus\(await callAction\(\(\) => setQuoteStatus\(dbId, status, trace\), "Quotation status change"\), status\)/);
     assert.match(actions, /await callAction\(\(\) => duplicateQuote\(dbId\), "Quotation duplicate"\)/);
     assert.match(view, /await callAction\(\(\) => invoiceFromQuote\(dbId\), "Invoice from quotation"\)/);
     for (const [file, src] of Object.entries({ builder, actions, view })) {

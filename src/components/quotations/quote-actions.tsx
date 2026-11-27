@@ -13,6 +13,7 @@ import { formatDate, formatMoney } from "@/lib/format";
 import { quoteTotals } from "@/lib/quote-math";
 import { callAction } from "@/lib/action-call";
 import { confirmQuoteStatus } from "@/lib/quote-status";
+import { clientOutcome, newTraceId, traceLine } from "@/lib/trace";
 
 export function QuoteStatusBadge({ status }: { status: QuoteDisplayStatus }) {
   return <Badge tone={QUOTE_STATUS_TONE[status]}>{status}</Badge>;
@@ -50,8 +51,12 @@ export function useQuoteActions() {
     async (q: Quotation, status: "Sent" | "Accepted" | "Declined") => {
       const dbId = q.dbId;
       if (!dbId) return null;
+      // Diagnostic (browser console): one trace ID ties this click to the server's crm-trace lines.
+      const trace = newTraceId();
+      console.info(traceLine("client-start", { action: "quote-status", trace, to: status }));
       // A failed request becomes a message (never a crash), and a "success" without the new status isn't one.
-      const result = confirmQuoteStatus(await callAction(() => setQuoteStatus(dbId, status), "Quotation status change"), status);
+      const result = confirmQuoteStatus(await callAction(() => setQuoteStatus(dbId, status, trace), "Quotation status change"), status);
+      console.info(traceLine("client-end", { action: "quote-status", trace, to: status, outcome: clientOutcome(result) }));
       if (!result.ok) {
         toast({ tone: "info", message: <p>{result.message}</p> });
         return null;

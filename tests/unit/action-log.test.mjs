@@ -84,7 +84,7 @@ describe("setQuoteStatus logs every exit with the right outcome (logic unchanged
 
   it("one line per call with a fresh request ID and the requested status", () => {
     assert.match(fn, /const requestId = newRequestId\(\);/);
-    assert.match(fn, /const done = \(outcome: QuoteStatusOutcome, result: QuoteResult, code\?: string\) => \{\s*console\.info\(quoteStatusLogLine\(\{ requestId, to: status, outcome, code \}\)\);\s*return result;\s*\};/);
+    assert.match(fn, /const done = \(outcome: QuoteStatusOutcome, result: QuoteResult, code\?: string\) => \{\s*console\.info\(quoteStatusLogLine\(\{ requestId, to: status, outcome, code \}\)\);\s*trace\.log\("exit", \{ outcome, quote: code \}\);\s*return result;\s*\};/);
     const body = fn.slice(fn.indexOf("if (typeof dbId"));
     for (const r of body.match(/return\s+[^;]*/g)) assert.match(r, /^return\s+done\(/, r.slice(0, 80));
   });
@@ -171,7 +171,7 @@ describe("the shared Archive button (Customers, Leads, Quotations) never loses a
   const confirm = ui.slice(ui.indexOf("function confirm()"), ui.indexOf("return (", ui.indexOf("function confirm()")));
 
   it("goes through callAction; what happens next is unchanged", () => {
-    assert.match(confirm, /const r = await callAction\(\(\) => archiveRecord\(kind, dbId\), "Archive"\);/);
+    assert.match(confirm, /const r = await callAction\(\(\) => archiveRecord\(kind, dbId, trace\), "Archive"\);/);
     assert.ok(!/await archiveRecord\(/.test(ui), "no unguarded call");
     assert.match(
       confirm,
