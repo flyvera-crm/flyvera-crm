@@ -58,9 +58,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 21 migrations in order on an empty database", () => {
+  it("applies all 22 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 21);
+    assert.equal(files.length, 22);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -717,11 +717,14 @@ describe("13 · Integrity hardening (migration 14)", () => {
 describe("14 · Booking creation & payment corrections (migration 15)", () => {
   const BOOK = "select create_booking_from_quotation($1, $2, current_date + 60, current_date + 67, current_date + 7, current_date + 30) as id";
 
-  /** An accepted quotation for Sara's customer CU-1001, created inside the current (rolled-back) transaction. */
+  /**
+   * An accepted quotation for Sara's customer CU-1001, created inside the current (rolled-back) transaction
+   * the way the app does it: a Draft, its items, then accepted (answered quotations are final, migration 22).
+   */
   async function acceptedQuote(q, withItems = true) {
     const [quote] = await q(
-      `insert into quotations (organization_id, customer_id, recipient, title, destination, valid_until, status, prepared_by, sent_at, responded_at)
-       values ($1, $2, '{"name":"Amelia Hart"}', 'Lisbon weekend', 'Lisbon', current_date + 14, 'Accepted', $3, now(), now()) returning id`,
+      `insert into quotations (organization_id, customer_id, recipient, title, destination, valid_until, status, prepared_by)
+       values ($1, $2, '{"name":"Amelia Hart"}', 'Lisbon weekend', 'Lisbon', current_date + 14, 'Draft', $3) returning id`,
       [ORG, ids["CU-1001"], USERS.sara.id]);
     if (withItems) {
       await q(
@@ -729,6 +732,7 @@ describe("14 · Booking creation & payment corrections (migration 15)", () => {
          values ($1, $2, 0, 'Flight', 'Return flights', 2, 400, 600), ($1, $2, 1, 'Hotel', '3 nights', 1, 500, 380)`,
         [ORG, quote.id]);
     }
+    await q("update quotations set status = 'Accepted', sent_at = now(), responded_at = now() where id = $1", [quote.id]);
     return quote.id;
   }
 
@@ -1654,5 +1658,161 @@ describe("22 · Quotation status & edit guards (app workflow)", () => {
       assert.equal(N(await q(STATUS, [id, "Accepted", "Sent"])), 0, "no error, but nothing changed: the app must not report success");
       assert.equal((await q("select status from quotations where id = $1", [id]))[0].status, "Sent");
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("23 · Answered quotations are final (migration 22)", () => {
+  const LOCKED = /was (accepted|declined), so it can't be changed/;
+  const LOCKED_ITEMS = /was (accepted|declined), so its items can't be changed/;
+  const idOf = async (q, code) => (await q("select id from quotations where code = $1", [code]))[0].id;
+  const row = async (q, code) =>
+    (await q("select status, title, prepared_by, sent_at, responded_at, deleted_at from quotations where code = $1", [code]))[0];
+
+  it("a sales agent can't edit, reassign, re-open or re-answer her accepted or declined quotation", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const accepted = await idOf(q, "QT-3001"); // Sara's, Accepted
+      const declined = await idOf(q, "QT-3006"); // Sara's, Declined
+      const before = await row(q, "QT-3001");
+      await q.fails("update quotations set title = 'Changed' where id = $1", [accepted], LOCKED);
+      await q.fails("update quotations set status = 'Draft' where id = $1", [accepted], LOCKED);
+      await q.fails("update quotations set status = 'Sent', responded_at = null where id = $1", [accepted], LOCKED);
+      await q.fails("update quotations set status = 'Declined' where id = $1", [accepted], LOCKED);
+      await q.fails("update quotations set prepared_by = $2 where id = $1", [accepted, USERS.daniel.id], LOCKED);
+      await q.fails("update quotations set discount = 0, notes = 'x' where id = $1", [accepted], LOCKED);
+      await q.fails("update quotations set status = 'Accepted' where id = $1", [declined], LOCKED);
+      assert.deepEqual(await row(q, "QT-3001"), before, "nothing changed");
+    });
+  });
+
+  it("their items can't be added, changed, removed or moved", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const accepted = await idOf(q, "QT-3001");
+      const declined = await idOf(q, "QT-3006");
+      const items = await q("select id, unit_price from quotation_items where quotation_id = $1 order by position", [accepted]);
+      assert.ok(items.length > 0);
+      await q.fails("update quotation_items set unit_price = 1 where quotation_id = $1", [accepted], LOCKED_ITEMS);
+      await q.fails("delete from quotation_items where quotation_id = $1", [accepted], LOCKED_ITEMS);
+      await q.fails(
+        `insert into quotation_items (organization_id, quotation_id, position, item_type, description, quantity, unit_price, cost)
+         values ($1, $2, 9, 'Other', 'Extra', 1, 10, 0)`,
+        [ORG, declined],
+        LOCKED_ITEMS,
+      );
+      // Moving an item out of, or into, an answered quotation is blocked too.
+      const draft = await idOf(q, "QT-3005");
+      const [draftItem] = await q("select id from quotation_items where quotation_id = $1 limit 1", [draft]);
+      await q.fails("update quotation_items set quotation_id = $2 where id = $1", [items[0].id, draft], LOCKED_ITEMS);
+      await q.fails("update quotation_items set quotation_id = $2 where id = $1", [draftItem.id, accepted], LOCKED_ITEMS);
+      assert.deepEqual(await q("select id, unit_price from quotation_items where quotation_id = $1 order by position", [accepted]), items);
+    });
+  });
+
+  it("admins can't edit them either (no override), but can still archive, restore and delete them", async () => {
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const accepted = await idOf(q, "QT-3001");
+      const declined = await idOf(q, "QT-3006"); // not booked, so it may be archived
+      await q.fails("update quotations set title = 'Changed by admin' where id = $1", [accepted], LOCKED);
+      await q.fails("update quotation_items set cost = 0 where quotation_id = $1", [declined], LOCKED_ITEMS);
+
+      const audits = () => count(q, "select 1 from audit_logs where table_name = 'quotations' and record_id = $1", [declined]);
+      const auditBefore = await audits();
+      await q("select archive_quotation($1)", [declined]);
+      assert.notEqual((await row(q, "QT-3006")).deleted_at, null, "archived");
+      assert.equal(N(await q("update quotations set deleted_at = null where id = $1 returning id", [declined])), 1, "restored");
+      assert.equal((await row(q, "QT-3006")).deleted_at, null);
+      assert.equal(await audits(), auditBefore + 2, "archive and restore are audited as before");
+
+      // Deleting a whole answered quotation (admin-only policy) still removes its items with it.
+      const [qt] = await q(
+        `insert into quotations (organization_id, customer_id, recipient, title, destination, valid_until, status, prepared_by)
+         values ($1, $2, '{"name":"Test"}', 'Oslo', 'Oslo', current_date + 14, 'Draft', $3) returning id`,
+        [ORG, ids["CU-1001"], USERS.sara.id],
+      );
+      await q(
+        `insert into quotation_items (organization_id, quotation_id, position, item_type, description, quantity, unit_price, cost)
+         values ($1, $2, 0, 'Hotel', '2 nights', 1, 300, 200)`,
+        [ORG, qt.id],
+      );
+      await q("update quotations set status = 'Declined', sent_at = now(), responded_at = now() where id = $1", [qt.id]);
+      assert.equal(N(await q("delete from quotations where id = $1 returning id", [qt.id])), 1);
+      assert.equal(await count(q, "select 1 from quotation_items where quotation_id = $1", [qt.id]), 0);
+    });
+  });
+
+  it("a blocked change leaves no trace: the record and its audit history are unchanged", async () => {
+    await asUser(db, USERS.aisha.id, async (q) => {
+      const accepted = await idOf(q, "QT-3001");
+      const audits = () => count(q, "select 1 from audit_logs where table_name = 'quotations' and record_id = $1", [accepted]);
+      const before = { row: await row(q, "QT-3001"), audits: await audits() };
+      await q.fails("update quotations set status = 'Draft' where id = $1", [accepted], LOCKED);
+      assert.deepEqual({ row: await row(q, "QT-3001"), audits: await audits() }, before);
+    });
+  });
+
+  it("Draft and Sent quotations work exactly as before: edit, items, Draft → Sent → Accepted / Declined", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const draft = await idOf(q, "QT-3005"); // Draft
+      const sent = await idOf(q, "QT-3003"); // Sent
+      assert.equal(N(await q("update quotations set title = 'Edited draft' where id = $1 returning id", [draft])), 1);
+      const [item] = await q(
+        `insert into quotation_items (organization_id, quotation_id, position, item_type, description, quantity, unit_price, cost)
+         values ($1, $2, 9, 'Other', 'Extra', 1, 10, 0) returning id`,
+        [ORG, draft],
+      );
+      assert.equal(N(await q("update quotation_items set unit_price = 12 where id = $1 returning id", [item.id])), 1);
+      assert.equal(N(await q("delete from quotation_items where id = $1 returning id", [item.id])), 1);
+
+      assert.equal(N(await q("update quotations set title = 'Edited while sent' where id = $1 returning id", [sent])), 1);
+      assert.equal(N(await q("update quotations set status = 'Sent', sent_at = now() where id = $1 returning id", [draft])), 1, "Draft → Sent");
+      assert.equal(N(await q("update quotations set status = 'Declined', responded_at = now() where id = $1 returning id", [draft])), 1, "Sent → Declined");
+      assert.equal(N(await q("update quotations set status = 'Accepted', responded_at = now() where id = $1 returning id", [sent])), 1, "Sent → Accepted");
+      // …and once answered, they're final.
+      await q.fails("update quotations set title = 'Too late' where id = $1", [sent], LOCKED);
+      await q.fails("update quotations set status = 'Sent' where id = $1", [draft], LOCKED);
+    });
+  });
+
+  it("a Draft can still be answered directly (the app records it as sent at the same time)", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const draft = await idOf(q, "QT-3005");
+      assert.equal(N(await q("update quotations set status = 'Accepted', sent_at = now(), responded_at = now() where id = $1 returning id", [draft])), 1);
+    });
+  });
+
+  it("bookings are still created from an accepted quotation (it is only read)", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [qt] = await q(
+        `insert into quotations (organization_id, customer_id, recipient, title, destination, valid_until, status, prepared_by)
+         values ($1, $2, '{"name":"Amelia Hart"}', 'Porto', 'Porto', current_date + 14, 'Draft', $3) returning id`,
+        [ORG, ids["CU-1001"], USERS.sara.id],
+      );
+      await q(
+        `insert into quotation_items (organization_id, quotation_id, position, item_type, description, quantity, unit_price, cost)
+         values ($1, $2, 0, 'Flight', 'Flights', 2, 250, 180)`,
+        [ORG, qt.id],
+      );
+      await q("update quotations set status = 'Accepted', sent_at = now(), responded_at = now() where id = $1", [qt.id]);
+      const [{ id }] = await q(
+        "select create_booking_from_quotation($1, $2, current_date + 60, current_date + 67, current_date + 7, current_date + 30) as id",
+        [qt.id, ids["CU-1001"]],
+      );
+      assert.ok(id);
+      assert.equal((await q("select status from quotations where id = $1", [qt.id]))[0].status, "Accepted", "the quotation is untouched");
+    });
+  });
+
+  it("the service role / SQL editor (no signed-in user) can still correct one, for support", async () => {
+    await asOwner(db, async (q) => {
+      const [qt] = await q("select id from quotations where code = 'QT-3001' and organization_id = $1", [ORG]);
+      assert.equal(N(await q("update quotations set notes = 'Support correction' where id = $1 returning id", [qt.id])), 1);
+      assert.ok(N(await q("update quotation_items set cost = cost where quotation_id = $1 returning id", [qt.id])) > 0);
+    });
+  });
+
+  it("roles that couldn't change quotations still can't (RLS unchanged)", async () => {
+    await asUser(db, USERS.leo.id, async (q) => assert.equal(N(await q("update quotations set title = 'x' where code = 'QT-3002' returning id")), 0));
+    await asUser(db, USERS.fiona.id, async (q) => assert.equal(N(await q("update quotations set title = 'x' where code = 'QT-3002' returning id")), 0));
+    await asUser(db, USERS.sam.id, async (q) => assert.equal(await count(q, "select 1 from quotations"), 0));
   });
 });
