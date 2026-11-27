@@ -8,6 +8,8 @@ import { refresh } from "next/cache";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { archiveLogLine, type ArchiveOutcome } from "@/lib/action-log";
+import { newRequestId } from "@/lib/stage-change-log";
 
 export type ArchiveKind = "customer" | "lead" | "quotation";
 export type ArchiveResult = { ok: true; message: string } | { ok: false; message: string };
@@ -19,13 +21,26 @@ const TABLE: Record<ArchiveKind, string> = { customer: "customers", lead: "leads
 const NOUN: Record<ArchiveKind, string> = { customer: "customer", lead: "lead", quotation: "quotation" };
 
 export async function archiveRecord(kind: unknown, dbId: unknown): Promise<ArchiveResult> {
-  if (!KINDS.includes(kind as ArchiveKind) || typeof dbId !== "string" || !UUID_RE.test(dbId)) return { ok: false, message: "That record couldn't be found." };
+  // Diagnostic: one server-log line per call (random request ID, record kind, outcome; no IDs or names).
+  const requestId = newRequestId();
+  const done = (outcome: ArchiveOutcome, result: ArchiveResult) => {
+    console.info(archiveLogLine({ requestId, kind, outcome }));
+    return result;
+  };
+
+  if (!KINDS.includes(kind as ArchiveKind) || typeof dbId !== "string" || !UUID_RE.test(dbId))
+    return done("invalid", { ok: false, message: "That record couldn't be found." });
   const k = kind as ArchiveKind;
   const supabase = await createClient();
   const { error } = await supabase.rpc(`archive_${k}`, { [`p_${k}_id`]: dbId });
-  if (error) return { ok: false, message: friendly(error, `archive this ${NOUN[k]}`) };
+  if (error) return done(isRefusal(error) ? "refused" : "failed", { ok: false, message: friendly(error, `archive this ${NOUN[k]}`) });
   refresh();
-  return { ok: true, message: `The ${NOUN[k]} was archived. An admin can restore it.` };
+  return done("ok", { ok: true, message: `The ${NOUN[k]} was archived. An admin can restore it.` });
+}
+
+/** The database said no (permission or a business rule), as opposed to any other error. Log category only. */
+function isRefusal(error: PostgrestError) {
+  return /row-level security|permission denied for/i.test(error.message) || ["P0001", "42501"].includes(error.code ?? "");
 }
 
 export async function listArchived(kind: unknown): Promise<{ ok: true; rows: ArchivedRow[] } | { ok: false; message: string }> {

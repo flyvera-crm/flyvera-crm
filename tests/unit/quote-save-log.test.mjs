@@ -89,8 +89,11 @@ describe("saveQuote logs every exit with the right outcome", () => {
   it("one log line per call, with a fresh request ID, written only through quoteSaveLogLine", () => {
     assert.match(save, /const requestId = newRequestId\(\);/);
     assert.match(save, /console\.info\(quoteSaveLogLine\(\{ requestId, outcome, code \}\)\);/);
+    // The file's only log calls: this one and the status-change diagnostic.
     const consoleCalls = actions.match(/console\.\w+\(/g) ?? [];
-    assert.equal(consoleCalls.length, 1, "the only log call in the file");
+    const diagnostic = actions.match(/console\.info\((quoteSaveLogLine|quoteStatusLogLine)\(/g) ?? [];
+    assert.equal(consoleCalls.length, 2);
+    assert.equal(diagnostic.length, 2, "every log call is a privacy-safe diagnostic");
   });
 
   it("every return goes through done(...)", () => {

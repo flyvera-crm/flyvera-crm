@@ -9,6 +9,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Icon } from "@/components/icons";
 import { useToast } from "@/components/ui/Toast";
 import { cn, formatDate } from "@/lib/format";
+import { callAction } from "@/lib/action-call";
 
 const LIST: Record<ArchiveKind, { href: string; noun: string; plural: string; detail: (code: string) => string }> = {
   customer: { href: "/customers", noun: "customer", plural: "customers", detail: (c) => `/customers/${c}` },
@@ -26,7 +27,8 @@ export function ArchiveButton({ kind, dbId, name, className, onArchived }: { kin
 
   function confirm() {
     startBusy(async () => {
-      const r = await archiveRecord(kind, dbId);
+      // A failed request (network, redeploy) becomes a message instead of a crash; answers are unchanged.
+      const r = await callAction(() => archiveRecord(kind, dbId), "Archive");
       toast({ tone: r.ok ? undefined : "info", message: <p>{r.message}</p> });
       setOpen(false);
       if (!r.ok) return;

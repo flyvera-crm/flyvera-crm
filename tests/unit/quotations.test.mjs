@@ -81,7 +81,7 @@ describe("the server only reports changes the database actually made", () => {
   it("a status change applies only if the status is unchanged since it was checked, and must return the row", () => {
     assert.match(setStatus, /const plan = planStatusChange\(current, status, new Date\(\)\.toISOString\(\)\);/);
     assert.match(setStatus, /\.update\(plan\.update\)\s*\.eq\("id", dbId\)\s*\.eq\("status", current\.status\)\s*\.select\("id"\)\s*\.maybeSingle\(\)/);
-    assert.match(setStatus, /if \(!changed\) return \{ ok: false, message: QUOTE_CHANGED_MESSAGE \};/);
+    assert.match(setStatus, /if \(!changed\) return done\("changed", \{ ok: false, message: QUOTE_CHANGED_MESSAGE \}\);/);
     assert.match(setStatus, /confirmQuoteStatus\(\{ ok: true, quote \}, status\)/);
     assert.ok(!/const \{ error \} = await supabase\.from\("quotations"\)\.update/.test(actions), "no update whose result is ignored");
   });

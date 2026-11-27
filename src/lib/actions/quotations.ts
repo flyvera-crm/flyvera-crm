@@ -23,6 +23,7 @@ import {
 import { QUOTE_ITEM_TYPES } from "@/config/quote-options";
 import { confirmQuoteStatus, planStatusChange, QUOTE_CHANGED_MESSAGE } from "@/lib/quote-status";
 import { quoteSaveLogLine, type QuoteSaveOutcome } from "@/lib/quote-save-log";
+import { quoteStatusLogLine, type QuoteStatusOutcome } from "@/lib/action-log";
 import { newRequestId } from "@/lib/stage-change-log";
 
 export type SaveQuoteResult = { ok: true; quote: Quotation } | { ok: false; message: string; fieldErrors?: QuoteMessages };
@@ -166,8 +167,15 @@ async function saveItems(supabase: SupabaseClient, orgId: string, quoteId: strin
 /* ─────────────────────────── status & duplicate ─────────────────────────── */
 
 export async function setQuoteStatus(dbId: unknown, status: unknown): Promise<QuoteResult> {
-  if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return { ok: false, message: "That quotation couldn't be found." };
-  if (status !== "Sent" && status !== "Accepted" && status !== "Declined") return { ok: false, message: "That status isn't valid." };
+  // Diagnostic: one server-log line per call (random request ID, requested status, outcome, the database's code).
+  const requestId = newRequestId();
+  const done = (outcome: QuoteStatusOutcome, result: QuoteResult, code?: string) => {
+    console.info(quoteStatusLogLine({ requestId, to: status, outcome, code }));
+    return result;
+  };
+
+  if (typeof dbId !== "string" || !UUID_RE.test(dbId)) return done("not-found", { ok: false, message: "That quotation couldn't be found." });
+  if (status !== "Sent" && status !== "Accepted" && status !== "Declined") return done("invalid", { ok: false, message: "That status isn't valid." });
 
   const supabase = await createClient();
   const { data: current } = await supabase
@@ -176,9 +184,9 @@ export async function setQuoteStatus(dbId: unknown, status: unknown): Promise<Qu
     .eq("id", dbId)
     .is("deleted_at", null)
     .maybeSingle<{ id: string; status: QuoteStatus; sent_at: string | null }>();
-  if (!current) return { ok: false, message: "This quotation no longer exists, or you can't change it." };
+  if (!current) return done("not-found", { ok: false, message: "This quotation no longer exists, or you can't change it." });
   const plan = planStatusChange(current, status, new Date().toISOString());
-  if (!plan.ok) return plan;
+  if (!plan.ok) return done("invalid", plan);
 
   // Applies only if the status is still the one checked above, and must report the changed row:
   // a refused or overtaken update changes nothing and is never reported as saved.
@@ -189,13 +197,13 @@ export async function setQuoteStatus(dbId: unknown, status: unknown): Promise<Qu
     .eq("status", current.status)
     .select("id")
     .maybeSingle();
-  if (error) return { ok: false, message: failure(error, "change this quotation").message };
-  if (!changed) return { ok: false, message: QUOTE_CHANGED_MESSAGE };
+  if (error) return done("update-failed", { ok: false, message: failure(error, "change this quotation").message });
+  if (!changed) return done("changed", { ok: false, message: QUOTE_CHANGED_MESSAGE });
   const quote = await loadQuote(supabase, dbId);
   refresh();
-  return quote
-    ? confirmQuoteStatus({ ok: true, quote }, status)
-    : { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." };
+  if (!quote) return done("not-found", { ok: false, message: "Saved, but the quotation couldn't be reloaded. Refresh the page." });
+  const confirmed = confirmQuoteStatus({ ok: true, quote }, status);
+  return done(confirmed.ok ? "ok" : "update-failed", confirmed, quote.id);
 }
 
 /** Copies a quotation (and its items) into a new Draft that's valid from today. */
