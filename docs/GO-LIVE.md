@@ -1,7 +1,9 @@
 # FLYVERA CRM — Going live (production runbook)
 
-Production has **not** been set up yet. Every step below changes real systems: do them in order, one at a
-time, and stop if anything looks different from what is described. Nothing here is automated.
+**Database status (checked 27 Nov 2026):** the production Supabase project (`flyvera-crm`) and staging
+(`flyvera-crm-staging`) both have **migrations 01–25** applied — see the log in section 3. Every other step
+below changes real systems: do them in order, one at a time, and stop if anything looks different from what
+is described. Nothing here is automated.
 
 **Never, on production:** run `supabase db push --include-seed`, `supabase db reset`, or load
 `supabase/seed.sql` (it contains demo logins with a known password). Never put real keys in this repository.
@@ -33,9 +35,12 @@ double-check the website name before using any menu.
 | `NEXT_PUBLIC_SUPABASE_URL` | Production project → Project Settings → API | no (public) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Production project → Project Settings → API Keys (publishable) | no (public; RLS protects data) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Production project → Project Settings → API Keys (secret / service_role) | **yes** — Hostinger's environment variables only, never `NEXT_PUBLIC_`, never committed |
+| `ANTHROPIC_API_KEY` | Anthropic Console → API keys (optional: without it, the AI flight-request panel says it isn't configured) | **yes** — same rules as the service-role key |
 
 The service-role key is used on the server only, to send invitation emails and to remove revoked,
 unaccepted logins — always after checking that the caller is an admin.
+The Anthropic key is read on the server only (`src/lib/ai/flight-request-ai.ts`), to turn a typed trip
+request into flight search details on the Flights page (migration 25). It is never sent to the browser.
 Use the **production** project's values here — never staging's, and never upload the local `.env.local`
 (it holds staging values).
 
@@ -129,7 +134,7 @@ hPanel → Domains → DNS / Nameservers.
 | Process limit shared by **all** sites on the plan (Business: 120; a Next.js app uses ~10–11) | If reached, sites can answer **503**. Watch the plan's usage graphs; Cloud plans raise the limit |
 | RAM / CPU for Node apps not published | Watch the CPU/RAM graphs after launch |
 | App sleeps after a period without traffic | The first request afterwards is slower; no data is lost |
-| 120-second limit per request | Fine (the slowest action, an invoice PDF, takes about a second) |
+| 120-second limit per request | Fine (an invoice PDF takes about a second; an AI flight-request reading is capped at a 30-second timeout with one retry) |
 | No inbound WebSockets, no always-running background workers | Not used by the CRM today; matters for future WhatsApp/AI features |
 | Builds: 15 min install + 15 min build; up to 2 earlier versions kept | Ample (about a minute locally) |
 
@@ -159,27 +164,41 @@ New migrations must be applied to the production database (section 3) **before**
       security shown in hPanel → Emails → *Connect apps & devices*; check Hostinger's sending limits.
       Send yourself a test reset email afterwards.
 
-## 3. Database: migrations 01–21 (no seed)
-1. Link the CLI to **production** (this replaces the staging link on this computer):
-   ```
-   npx supabase link --project-ref <production project ref>
-   ```
-2. **Check the link** — it must print the production ref, not staging's:
-   ```
-   cat supabase/.temp/project-ref
-   ```
-3. Dry run — it must list exactly the 21 files `20261120000100_…` to `20261120002100_…`, and **no seeds**:
+## 3. Database: migrations (no seed)
+Always staging first, then production, and only one new migration (or a known set) at a time.
+
+1. **Identify the projects.** `npx supabase projects list` shows both: `flyvera-crm` (production) and
+   `flyvera-crm-staging`. Note each ref from that listing; the local `.env.local` URL and
+   `supabase/.temp/project-ref` must both show **staging's** ref.
+2. **Staging dry run, then apply** (the CLI is linked to staging):
    ```
    npx supabase db push --remote --dry-run
+   npx supabase db push --remote --yes
    ```
-   (The CLI labels every hosted project "production"; go by the project name and ref it prints.)
-4. Apply, without the seed:
+3. **Production dry run** — target production by its ref, so the staging link on this computer never changes:
    ```
-   npx supabase db push --remote
+   npx supabase db push --remote=<production project ref> --dry-run
    ```
-5. Confirm all 21 appear with a remote timestamp: `npx supabase migration list --remote`.
-6. Link back to staging when done: `npx supabase link --project-ref <staging project ref>`, and check
-   `supabase/.temp/project-ref` again.
+   It must print `Target: project <production project ref> (not the linked project)` and list **exactly**
+   the new migration file(s), with no seeds. (When linked, the CLI labels every hosted project "production";
+   go by the name and ref, never the label.)
+4. **Apply to production**, without the seed:
+   ```
+   npx supabase db push --remote=<production project ref> --yes
+   ```
+5. **Check:** the same dry run now says "Remote database is up to date", and
+   `npx supabase migration list --remote=<production project ref>` shows every file with a remote timestamp.
+6. Apply each migration **before** deploying the app code that needs it.
+
+### Migration log
+| Migrations | Staging | Production |
+|---|---|---|
+| 01–24 | applied (already present on 27 Nov 2026) | applied (already present on 27 Nov 2026) |
+| 25 `ai_flight_requests` | applied 27 Nov 2026 | applied 27 Nov 2026 |
+
+Migration 25 was checked on both projects afterwards: the `Flight request` AI action kind,
+`ai_actions.flight_search_id` and its link to flight searches, and the `ai_actions_guard_flight_request`
+trigger exist, and signed-in and anonymous users can't call the guard function directly.
 
 ## 4. Passport encryption key (once, before anyone saves a passport)
 In the production **SQL editor** (generate your own random value of 40+ characters; never commit it):
@@ -229,6 +248,10 @@ values ('<organization id>', 'louispeterlouis00@gmail.com', '<Owner Name>', 'adm
 - [ ] Customer → quotation → print (letterhead shows) → accept → booking (deposit/balance dates follow Settings).
 - [ ] Record a payment → receipt prints → create and issue an invoice → PDF downloads with "How to pay".
 - [ ] Add a passport (proves the Vault key works) and reveal it (an audit entry appears).
+- [ ] **Flights:** as an admin, sales or ticketing user, the AI flight-request panel shows the readings left
+      today (50 per person); a typed request with no personal details becomes search details to review before
+      saving; a request containing an e-mail address or phone number is refused. A finance or support
+      colleague doesn't see the panel. (Without `ANTHROPIC_API_KEY` the panel only says it isn't configured.)
 - [ ] Dashboard shows the payment; a support-role colleague sees no amounts.
 - [ ] Response headers on any page include `X-Frame-Options: DENY` and `Strict-Transport-Security` (browser
       dev tools → Network → the page → Headers).

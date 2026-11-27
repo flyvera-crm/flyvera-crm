@@ -2,11 +2,11 @@
 
 Status: **the app runs on Supabase.** Every module (customers, leads, quotations, bookings, payments, tickets,
 invoices, refunds, team, dashboard, settings, suppliers) reads and writes the database through Row Level Security.
-Migrations 01–21 are applied to the **staging** project only; production has not been set up yet — see
-[`docs/GO-LIVE.md`](../GO-LIVE.md). No credentials exist in this repository.
+Migrations 01–25 are applied to both the **staging** and the **production** project (checked 27 Nov 2026;
+log and procedure in [`docs/GO-LIVE.md`](../GO-LIVE.md) section 3). No credentials exist in this repository.
 
 ## Contents
-- `supabase/migrations/` — 21 ordered migrations (the only source of truth for the schema)
+- `supabase/migrations/` — 25 ordered migrations (the only source of truth for the schema)
 - `supabase/seed.sql` — **development data only** (generated; never load into production)
 - `supabase/scripts/build-seed.mjs` — builds `seed.sql` from the app's demo data (`npm run db:seed:build`)
 - `supabase/tests/` — PGlite test suite (`npm run db:test`) + a **test-only** Supabase stand-in (`supabase-shim.sql`)
@@ -37,6 +37,10 @@ Migrations 01–21 are applied to the **staging** project only; production has n
 | 19 | team_access | invitations with name, team, revoke and send tracking; access granted when the invitation is **accepted** (email confirmed); `invite_member()`, `change_member_role()` and `set_member_status()` (reason; not yourself; open work handed to a colleague), `team_directory()`; direct member/invitation writes revoked |
 | 20 | agency_settings | `update_agency_settings()` (admins; every value validated); direct `organizations` updates revoked; `invoices.issuer` freezes the agency details, bank details and terms when an invoice is issued |
 | 21 | gap_fills | customers with active bookings / quotations that became bookings can't be archived; lead stage changes logged automatically; timeline lines that mention money (`booking_events.mentions_money`) hidden from roles without money access |
+| 22 | quotation_answer_lock | Accepted/Declined quotations and their items can't be changed by signed-in users (only archiving); service role exempt |
+| 23 | pnr_verification | PNR verification (Pending / Verified / Not verified, date, agent, notes) via `verify_pnr()` (admins, ticketing); airline code; editing a PNR's locators, airline or provider resets it to Pending |
+| 24 | supplier_safe_flights | `flight_offers` written by the service role (supplier connection) only, placeholder providers refused, supplier fields added; `tickets.number_source` (manual / supplier API) and `supplier_reference`, frozen once issued |
+| 25 | ai_flight_requests | `ai_actions` kind `Flight request` + `flight_search_id`; trigger `private.guard_ai_flight_request()`: 50 readings per person per day (UTC) and no e-mail, phone, ID or passport-style numbers in the text sent to the AI (see below) |
 
 ## Relationships (main links)
 ```
@@ -53,7 +57,7 @@ organizations ─┬─ organization_members ── profiles (= auth.users)     
                             ├─ pnr_records ── booking_segments
                             ├─ payments ── payment_transactions   ├─ refunds
                             └─ invoices ── invoice_lines
-tasks, ai_actions → lead / customer / quotation / booking / conversation        audit_logs → everything
+tasks, ai_actions → lead / customer / quotation / booking / conversation / flight search    audit_logs → everything
 ```
 Every child table references its parent with a **composite key `(parent_id, organization_id)`**, so a
 record can never be linked to another organization's data. Readable codes (`CU-1025`, `LD-2062`,
@@ -137,6 +141,21 @@ select vault.create_secret('<long random value>', 'flyvera_document_key', 'Passp
 ```
 Losing this key makes stored passport numbers unreadable: back it up in your password manager.
 
+## AI flight requests (migration 25)
+On the Flights page, admins, sales managers, sales agents and ticketing agents (the roles that may create
+flight searches) can type a trip request; the AI turns it into search details that the agent reviews before
+anything is saved. The AI never produces fares or availability.
+- **Logged:** every reading is an `ai_actions` row of kind `Flight request` (Proposed → Applied / Rejected,
+  or Failed). `flight_search_id` links the search saved after review; it clears if that search is deleted,
+  and the reading stays logged.
+- **Limited:** 50 readings per person per day (UTC), counted in the database one request at a time per
+  person, so simultaneous requests can't exceed it.
+- **No personal data:** the text sent (`input.text`) may not contain e-mail addresses, phone or other long
+  ID numbers, or passport-style numbers; dates are allowed. The app checks first (and also keeps linked
+  customer/lead names out); the trigger is the backstop, including when the text is changed later.
+- The service role is not limited. Nobody can call `private.guard_ai_flight_request()` directly.
+- The Anthropic key (`ANTHROPIC_API_KEY`) is server-only; see [`docs/GO-LIVE.md`](../GO-LIVE.md).
+
 ## Development seed
 `seed.sql` reproduces the app's demo data (24 customers, 18 leads, 8 quotations, 8 bookings, 9 payments)
 plus staff, teams, passengers, PNRs, tickets, invoices, WhatsApp and AI samples, and a second test agency.
@@ -149,17 +168,19 @@ Sam (support), Tom (disabled), Nora (admin of the test agency).
 ```
 npm run db:test
 ```
-Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations + seed, and runs **102 tests**
-in 21 sections: structure, seed totals vs the app, relationships and money rules, agency isolation, each of
-the six roles, passport protection, audit log, storage, and the rules of migrations 14–21 (archiving,
+Creates an in-memory PostgreSQL (PGlite), applies the stand-in + all migrations + seed, and runs **143 tests**
+in 26 sections: structure, seed totals vs the app, relationships and money rules, agency isolation, each of
+the six roles, passport protection, audit log, storage, and the rules of migrations 14–25 (archiving,
 booking creation and payment corrections, ticketing, invoices, refund requests, team & access, dashboard
-data, agency settings, gap fills).
+data, agency settings, gap fills, quotation answer lock, PNR verification, supplier-safe flights, AI flight
+requests).
 
 ```
 npm run test:unit
 ```
 Runs the unit tests for the app's pure business rules (dashboard figures, CSV exports, settings, suppliers,
-lead activity, invoice wording, security headers, navigation) with Node's test runner — no database needed.
+lead activity, invoice wording, security headers, navigation, PNR verification, flight suppliers, AI flight
+requests) with Node's test runner — no database needed (198 tests).
 
 ### What PGlite tests do NOT cover
 PGlite is real PostgreSQL, but `supabase/tests/supabase-shim.sql` only imitates Supabase. Not tested:
@@ -170,4 +191,5 @@ staging project and test the main flows with real logins for every role.**
 
 ## Going live
 Follow [`docs/GO-LIVE.md`](../GO-LIVE.md). In short: production environment variables and Auth settings,
-`db push` of migrations 01–21 **without the seed**, the Vault passport key, then the first agency and admin.
+migrations (01–25 already applied; new ones staging first, then production, **without the seed**), the Vault
+passport key, then the first agency and admin.
