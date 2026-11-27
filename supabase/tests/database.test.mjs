@@ -58,9 +58,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 24 migrations in order on an empty database", () => {
+  it("applies all 25 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 24);
+    assert.equal(files.length, 25);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -2114,6 +2114,103 @@ describe("25 · Supplier-safe flight offers and ticket number source (migration 
       assert.match(fns[0].args, /p_supplier_reference text$/);
       const [g] = await q("select has_function_privilege('anon', 'public.issue_ticket(uuid, uuid, uuid, text, text, numeric, numeric, timestamptz, text)', 'execute') anon");
       assert.equal(g.anon, false);
+    });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("26 · AI flight-request readings: logged, limited, no personal data (migration 25)", () => {
+  const LOG = `insert into ai_actions (organization_id, action_kind, status, model, input)
+               values ($1, 'Flight request', 'Proposed', 'claude-opus-5-5', jsonb_build_object('text', $2::text, 'today', '2026-11-27')) returning id`;
+  const LIMIT = /Daily limit reached: 50 AI flight-request readings per person per day/;
+  const PII = /Remove personal details/;
+
+  it("a reading is logged as 'Flight request' by the person who asked, and can link the search they saved", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [a] = await q(LOG, [ORG, "2 adults Dubai to London 15 Jan, business"]);
+      const [search] = await q("insert into flight_searches (organization_id, origin, destination, depart_on) values ($1, 'DXB', 'LON', current_date + 40) returning id", [ORG]);
+      await q("update ai_actions set status = 'Applied', applied_at = now(), flight_search_id = $2 where id = $1", [a.id, search.id]);
+      const [row] = await q("select action_kind, requested_by, status, reviewed_by, flight_search_id from ai_actions where id = $1", [a.id]);
+      assert.deepEqual(row, { action_kind: "Flight request", requested_by: USERS.sara.id, status: "Applied", reviewed_by: USERS.sara.id, flight_search_id: search.id });
+    });
+  });
+
+  it("allows 50 readings per person per day, and refuses the 51st", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      for (let i = 0; i < 50; i++) await q(LOG, [ORG, `Trip ${i}: DXB to LHR next month`]);
+      await q.fails(LOG, [ORG, "one more: DXB to LHR"], LIMIT);
+      // Other kinds of AI action don't count, and aren't limited by this rule.
+      await q("insert into ai_actions (organization_id, action_kind, input) values ($1, 'Summary', '{}')", [ORG]);
+    });
+  });
+
+  it("counts each person separately and only today's (UTC) readings", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      for (let i = 0; i < 50; i++) {
+        await q(`insert into ai_actions (organization_id, action_kind, input, created_at)
+                 values ($1, 'Flight request', '{"text":"DXB to LHR"}', now() - interval '1 day')`, [ORG]);
+      }
+      assert.equal(N(await q(LOG, [ORG, "DXB to LHR today"])), 1, "yesterday's readings don't count");
+    });
+    await asUser(db, USERS.daniel.id, async (q) => assert.equal(N(await q(LOG, [ORG, "LHR to JFK"])), 1, "another person has their own allowance"));
+  });
+
+  it("refuses e-mail addresses, phone or ID numbers and passport-style numbers in what is sent", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      for (const text of [
+        "Book for jane.doe@example.com DXB-LHR",
+        "Call +44 7700 900123 about Dubai to London",
+        "call 0501234567 re trip",
+        "passport AB1234567, Dubai to London",
+        "ID 784198712345678 travelling to Paris",
+      ]) {
+        await q.fails(LOG, [ORG, text], PII);
+      }
+    });
+  });
+
+  it("allows ordinary trip details: dates, budgets, flight numbers, airline and airport codes", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      for (const text of [
+        "2 adults DXB to LHR on 2027-01-15, back 2027-01-29, business, EK or QR",
+        "Dubai to London 15/01/2027 return 29.01.27, budget USD 9,000",
+        "1 adult, 1 infant, prefer EK001 if possible, budget 12500 AED",
+      ]) {
+        assert.equal(N(await q(LOG, [ORG, text])), 1, text);
+      }
+    });
+  });
+
+  it("changing a logged request's text later is checked the same way", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [a] = await q(LOG, [ORG, "DXB to LHR"]);
+      await q.fails("update ai_actions set input = jsonb_set(input, '{text}', '\"mail me at a@b.co\"') where id = $1", [a.id], PII);
+    });
+  });
+
+  it("the service role (imports, support) is not limited by these rules", async () => {
+    await asOwner(db, async (q) => {
+      const [p] = await q("select id from profiles limit 1");
+      assert.equal(N(await q(`insert into ai_actions (organization_id, requested_by, action_kind, input)
+                              values ($1, $2, 'Flight request', '{"text":"a@b.co"}') returning id`, [ORG, p.id])), 1);
+    });
+  });
+
+  it("the link to the saved search clears if that search is deleted; the reading stays logged", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [a] = await q(LOG, [ORG, "DXB to LHR"]);
+      const [search] = await q("insert into flight_searches (organization_id, origin, destination, depart_on) values ($1, 'DXB', 'LHR', current_date + 40) returning id", [ORG]);
+      await q("update ai_actions set flight_search_id = $2 where id = $1", [a.id, search.id]);
+      await q("delete from flight_searches where id = $1", [search.id]);
+      const [row] = await q("select flight_search_id from ai_actions where id = $1", [a.id]);
+      assert.equal(row.flight_search_id, null);
+    });
+  });
+
+  it("nobody can call the guard directly", async () => {
+    await asOwner(db, async (q) => {
+      const [g] = await q("select has_function_privilege('authenticated', 'private.guard_ai_flight_request()', 'execute') auth, has_function_privilege('anon', 'private.guard_ai_flight_request()', 'execute') anon");
+      assert.deepEqual(g, { auth: false, anon: false });
     });
   });
 });

@@ -1,0 +1,214 @@
+"use server";
+
+// AI reading of flight requests (Phase 3). Server Actions are public endpoints: every input is
+// re-checked here and every write runs as the signed-in user (Row Level Security has the final say).
+//
+//  1. readFlightRequest: checks the text for personal data, logs the reading in ai_actions (the database
+//     enforces the 50-per-day limit and repeats the personal-data check), asks the AI, and returns a
+//     DRAFT for the agent to review. Nothing is saved as a flight search here.
+//  2. saveFlightRequest: only after the agent confirms they reviewed the details; saves the search
+//     (not searched: no live supplier) and marks the reading Applied.
+//  3. discardFlightRequest: marks the reading Rejected.
+// The linked lead / customer stays inside the CRM: it is never sent to the AI.
+import { refresh } from "next/cache";
+import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser, type AppRole } from "@/lib/auth";
+import { aiConfigured, readFlightRequestWithAi } from "@/lib/ai/flight-request-ai";
+import {
+  AI_MODEL,
+  CABINS,
+  DAILY_LIMIT,
+  draftFromAi,
+  estimateCostUsd,
+  requestTextProblem,
+  searchRow,
+  validateDraft,
+  type Cabin,
+  type FlightRequestDraft,
+} from "@/lib/flight-request";
+
+export type ReadResult =
+  | { ok: true; actionId: string; draft: FlightRequestDraft; questions: string[]; remaining: number }
+  | { ok: false; message: string; remaining?: number };
+export type SaveResult = { ok: true; message: string } | { ok: false; message: string; fieldErrors?: Partial<Record<keyof FlightRequestDraft, string>> };
+
+/** Same roles that may create flight searches (RLS, migration 10). */
+const ALLOWED: AppRole[] = ["admin", "sales_manager", "sales_agent", "ticketing_agent"];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const todayUtc = () => new Date().toISOString().slice(0, 10);
+
+const REASONS: Record<string, string> = {
+  "not-configured": "AI request reading isn't configured yet. Ask your admin.",
+  refused: "The AI couldn't read this request. Fill in the details yourself.",
+  incomplete: "The AI's reading was incomplete. Try a shorter request, or fill in the details yourself.",
+  unreadable: "The AI's reading couldn't be used. Try again, or fill in the details yourself.",
+  unavailable: "The AI service didn't respond. Try again in a moment, or fill in the details yourself.",
+};
+
+async function context() {
+  const user = await getCurrentUser();
+  const m = user.membership;
+  if (!m) return { message: "Your login isn't linked to an agency yet. Ask your admin." } as const;
+  if (!ALLOWED.includes(m.role)) return { message: "Your role can't create flight searches." } as const;
+  return { user, orgId: m.organizationId, supabase: await createClient() } as const;
+}
+
+/** "lead:LD-2001" / "customer:CU-1001" / "" → database id and the names to keep out of the AI request. */
+async function resolveLink(supabase: SupabaseClient, orgId: string, link: unknown) {
+  const value = typeof link === "string" ? link : "";
+  const [kind, code] = value.split(":");
+  if (kind === "lead" && /^LD-\d+$/.test(code ?? "")) {
+    const { data } = await supabase.from("leads").select("id, full_name").eq("organization_id", orgId).eq("code", code).is("deleted_at", null).maybeSingle();
+    return data ? { lead_id: data.id as string, customer_id: null, names: [data.full_name as string] } : null;
+  }
+  if (kind === "customer" && /^CU-\d+$/.test(code ?? "")) {
+    const { data } = await supabase.from("customers").select("id, first_name, last_name").eq("organization_id", orgId).eq("code", code).is("deleted_at", null).maybeSingle();
+    return data ? { lead_id: null, customer_id: data.id as string, names: [`${data.first_name} ${data.last_name}`] } : null;
+  }
+  return value ? null : { lead_id: null, customer_id: null, names: [] as string[] };
+}
+
+async function usedToday(supabase: SupabaseClient, userId: string) {
+  const { count } = await supabase
+    .from("ai_actions")
+    .select("id", { count: "exact", head: true })
+    .eq("requested_by", userId)
+    .eq("action_kind", "Flight request")
+    .gte("created_at", `${todayUtc()}T00:00:00Z`);
+  return count ?? 0;
+}
+
+function dbMessage(error: PostgrestError | null, fallback: string) {
+  if (error && error.code === "P0001") return error.message; // our own database messages (limit, personal data)
+  return fallback;
+}
+
+export async function readFlightRequest(text: unknown, link: unknown): Promise<ReadResult> {
+  const ctx = await context();
+  if ("message" in ctx) return { ok: false, message: ctx.message! };
+  const { user, orgId, supabase } = ctx;
+
+  const linked = await resolveLink(supabase, orgId, link);
+  if (!linked) return { ok: false, message: "That lead or customer couldn't be found." };
+  const problem = requestTextProblem(text, linked.names);
+  if (problem) return { ok: false, message: problem };
+  if (!aiConfigured()) return { ok: false, message: REASONS["not-configured"] };
+
+  const today = todayUtc();
+  const requestText = (text as string).trim();
+  // Logged before the AI is asked: the database enforces the daily limit and the personal-data check here.
+  const { data: action, error } = await supabase
+    .from("ai_actions")
+    .insert({
+      organization_id: orgId,
+      action_kind: "Flight request",
+      status: "Proposed",
+      model: AI_MODEL,
+      input: { text: requestText, today },
+      lead_id: linked.lead_id,
+      customer_id: linked.customer_id,
+    })
+    .select("id")
+    .single();
+  if (error || !action) return { ok: false, message: dbMessage(error, "The request couldn't be logged, so it wasn't sent. Try again."), remaining: Math.max(0, DAILY_LIMIT - (await usedToday(supabase, user.id))) };
+
+  const reading = await readFlightRequestWithAi(requestText, today);
+  const tokens = "inputTokens" in reading && reading.inputTokens !== undefined
+    ? { input_tokens: reading.inputTokens, output_tokens: reading.outputTokens ?? 0, cost_usd: estimateCostUsd(reading.inputTokens, reading.outputTokens ?? 0) }
+    : {};
+  const remaining = Math.max(0, DAILY_LIMIT - (await usedToday(supabase, user.id)));
+
+  if (!reading.ok) {
+    await supabase.from("ai_actions").update({ status: "Failed", error: reading.reason, model: reading.model ?? AI_MODEL, ...tokens }).eq("id", action.id);
+    return { ok: false, message: REASONS[reading.reason], remaining };
+  }
+
+  const { draft, questions } = draftFromAi(reading.raw, today);
+  await supabase
+    .from("ai_actions")
+    .update({ model: reading.model, output: { extraction: reading.raw, draft, questions }, ...tokens })
+    .eq("id", action.id);
+  return { ok: true, actionId: action.id as string, draft, questions, remaining };
+}
+
+/** Saves the search ONLY after the agent confirms they reviewed and approve the details. */
+export async function saveFlightRequest(actionId: unknown, raw: unknown, link: unknown, reviewed: unknown): Promise<SaveResult> {
+  if (reviewed !== true) return { ok: false, message: "Confirm that you've reviewed the details before saving." };
+  if (typeof actionId !== "string" || !UUID_RE.test(actionId)) return { ok: false, message: "That AI reading couldn't be found." };
+  const ctx = await context();
+  if ("message" in ctx) return { ok: false, message: ctx.message! };
+  const { user, orgId, supabase } = ctx;
+
+  const { data: action } = await supabase
+    .from("ai_actions")
+    .select("id, status, action_kind, requested_by, output")
+    .eq("id", actionId)
+    .maybeSingle<{ id: string; status: string; action_kind: string; requested_by: string; output: { questions?: string[] } | null }>();
+  if (!action || action.action_kind !== "Flight request" || action.requested_by !== user.id)
+    return { ok: false, message: "That AI reading couldn't be found." };
+  if (action.status !== "Proposed") return { ok: false, message: "This AI reading was already saved or discarded." };
+
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const s = (k: keyof FlightRequestDraft) => (typeof r[k] === "string" ? (r[k] as string) : "");
+  const v: FlightRequestDraft = {
+    origin: s("origin"),
+    destination: s("destination"),
+    departOn: s("departOn"),
+    returnOn: s("returnOn"),
+    adults: s("adults"),
+    children: s("children"),
+    infants: s("infants"),
+    cabin: (CABINS as readonly string[]).includes(s("cabin")) ? (s("cabin") as Cabin) : ("" as Cabin),
+    preferredAirlines: s("preferredAirlines"),
+    budgetAmount: s("budgetAmount"),
+    budgetCurrency: s("budgetCurrency") || "USD",
+  };
+  const fieldErrors = validateDraft(v, todayUtc());
+  if (Object.keys(fieldErrors).length) return { ok: false, message: "Some details need attention.", fieldErrors };
+
+  const linked = await resolveLink(supabase, orgId, link);
+  if (!linked) return { ok: false, message: "That lead or customer couldn't be found." };
+
+  const row = searchRow(v, action.id, Array.isArray(action.output?.questions) ? action.output!.questions! : []);
+  const { data: search, error } = await supabase
+    .from("flight_searches")
+    .insert({ organization_id: orgId, ...row, lead_id: linked.lead_id, customer_id: linked.customer_id })
+    .select("id")
+    .single();
+  if (error || !search) return { ok: false, message: "The search couldn't be saved. Check the details and try again." };
+
+  await supabase
+    .from("ai_actions")
+    .update({ status: "Applied", applied_at: new Date().toISOString(), flight_search_id: search.id, lead_id: linked.lead_id, customer_id: linked.customer_id })
+    .eq("id", action.id);
+  refresh();
+  return {
+    ok: true,
+    message: `Saved ${row.origin} → ${row.destination}. Not searched: no live flight supplier is connected, so no fares or availability are shown.`,
+  };
+}
+
+export async function discardFlightRequest(actionId: unknown): Promise<SaveResult> {
+  if (typeof actionId !== "string" || !UUID_RE.test(actionId)) return { ok: false, message: "That AI reading couldn't be found." };
+  const ctx = await context();
+  if ("message" in ctx) return { ok: false, message: ctx.message! };
+  const { user, supabase } = ctx;
+  const { data } = await supabase
+    .from("ai_actions")
+    .update({ status: "Rejected" })
+    .eq("id", actionId)
+    .eq("requested_by", user.id)
+    .eq("action_kind", "Flight request")
+    .eq("status", "Proposed")
+    .select("id")
+    .maybeSingle();
+  return data ? { ok: true, message: "Discarded. Nothing was saved." } : { ok: false, message: "This AI reading was already saved or discarded." };
+}
+
+/** For the page: whether reading is available to this person, and how many readings are left today. */
+export async function flightRequestStatus(): Promise<{ allowed: boolean; configured: boolean; remaining: number }> {
+  const ctx = await context();
+  if ("message" in ctx) return { allowed: false, configured: false, remaining: 0 };
+  return { allowed: true, configured: aiConfigured(), remaining: Math.max(0, DAILY_LIMIT - (await usedToday(ctx.supabase, ctx.user.id))) };
+}
