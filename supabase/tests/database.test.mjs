@@ -58,9 +58,9 @@ before(async () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("1 · Migrations & structure", () => {
-  it("applies all 23 migrations in order on an empty database", () => {
+  it("applies all 24 migrations in order on an empty database", () => {
     const files = migrationFiles();
-    assert.equal(files.length, 23);
+    assert.equal(files.length, 24);
     assert.deepEqual(files, [...files].sort());
   });
 
@@ -1962,6 +1962,158 @@ describe("24 · Manual PNR verification (migration 23)", () => {
       await q.fails("update pnr_records set verification_status = 'Not verified', verified_at = now() where id = $1", [pnr.id], /not_verified_needs_notes/);
       assert.equal(N(await q("update pnr_records set verification_status = 'Verified', verified_at = now() where id = $1 returning id", [pnr.id])), 1,
         "the service role (imports, support) is not limited to verify_pnr()");
+    });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe("25 · Supplier-safe flight offers and ticket number source (migration 24)", () => {
+  /** A confirmed booking with an active PNR and a passenger who has no issued ticket yet. */
+  const ticketable = async (q) =>
+    (
+      await q(
+        `select b.id booking_id, p.id pnr_id, x.id passenger_id from bookings b
+         join pnr_records p on p.booking_id = b.id and p.status = 'Active'
+         join passengers x on x.booking_id = b.id
+         where b.status in ('Confirmed', 'Ticketed')
+           and not exists (select 1 from tickets k where k.passenger_id = x.id and k.status = 'Issued')
+         order by b.code limit 1`,
+      )
+    )[0];
+  const ISSUE = "select issue_ticket($1, $2, $3, $4, 'EK', 500, 80, now()::timestamptz, $5) as id";
+
+  it("staff can't create, change or delete flight offers — not even for their own search", async () => {
+    await asUser(db, USERS.sara.id, async (q) => {
+      const [search] = await q("insert into flight_searches (organization_id, origin, destination, depart_on) values ($1, 'DXB', 'LHR', current_date + 30) returning id", [ORG]);
+      await q.fails(
+        `insert into flight_offers (organization_id, search_id, provider, provider_offer_id, base_amount) values ($1, $2, 'Amadeus', 'X1', 450)`,
+        [ORG, search.id],
+        /permission denied/,
+      );
+    });
+    for (const user of [USERS.aisha, USERS.leo, USERS.daniel]) {
+      await asUser(db, user.id, async (q) => {
+        await q.fails("update flight_offers set base_amount = 1", [], /permission denied/);
+        await q.fails("delete from flight_offers", [], /permission denied/);
+      });
+    }
+  });
+
+  it("reading offers is unchanged: the read policy stays, the 'manage' policy and write rights are gone", async () => {
+    await asOwner(db, async (q) => {
+      const policies = (await q("select policyname from pg_policies where schemaname = 'public' and tablename = 'flight_offers' order by 1")).map((r) => r.policyname);
+      assert.deepEqual(policies, ["flight offers: read with the search"]);
+      const [p] = await q(
+        `select has_table_privilege('authenticated', 'public.flight_offers', 'SELECT') sel,
+                has_table_privilege('authenticated', 'public.flight_offers', 'INSERT') ins,
+                has_table_privilege('authenticated', 'public.flight_offers', 'UPDATE') upd,
+                has_table_privilege('authenticated', 'public.flight_offers', 'DELETE') del`,
+      );
+      assert.deepEqual(p, { sel: true, ins: false, upd: false, del: false });
+    });
+  });
+
+  it("the supplier connection (service role) can store a real supplier's offer with its details and raw response", async () => {
+    await asOwner(db, async (q) => {
+      const [search] = await q(
+        "insert into flight_searches (organization_id, origin, destination, depart_on, provider) values ($1, 'DXB', 'LHR', current_date + 30, 'Amadeus') returning id",
+        [ORG],
+      );
+      const [offer] = await q(
+        `insert into flight_offers (organization_id, search_id, provider, provider_offer_id, validating_carrier, base_amount, tax_amount, currency,
+                                    fare_brand, refundable, changeable, seats_available, stops, baggage, fare_rules, raw)
+         values ($1, $2, 'Amadeus', 'AMA-1-ABC', 'EK', 410, 95.5, 'USD', 'Flex', false, true, 4, 0,
+                 '{"ADT": {"checked": "2PC"}}', '{"change": "USD 100 fee"}', '{"source": "supplier response"}')
+         returning fetched_at, total_amount`,
+        [ORG, search.id],
+      );
+      assert.ok(offer.fetched_at, "fetch time recorded automatically");
+      assert.equal(Number(offer.total_amount), 505.5);
+    });
+  });
+
+  it("placeholder providers and offers without a supplier offer ID are refused, even for the service role", async () => {
+    await asOwner(db, async (q) => {
+      const [search] = await q("insert into flight_searches (organization_id, origin, destination, depart_on) values ($1, 'DXB', 'LHR', current_date + 30) returning id", [ORG]);
+      const add = (provider, id) =>
+        q.fails("insert into flight_offers (organization_id, search_id, provider, provider_offer_id, base_amount) values ($1, $2, $3, $4, 100)", [ORG, search.id, provider, id]);
+      for (const name of ["Manual", "demo", " Sample ", "TEST", "Mock", "fake", "", "x"]) assert.match(await add(name, "ID-1"), /flight_offers_real_provider/, name);
+      assert.match(await add("Sabre", "   "), /flight_offers_provider_offer_id_present/);
+    });
+  });
+
+  it("the development seed contains no flight offers (they would be invented fares)", async () => {
+    await asOwner(db, async (q) => assert.equal(await count(q, "select 1 from flight_offers"), 0));
+  });
+
+  it("a ticket recorded by staff is marked 'Manual from supplier document', with the optional supplier reference", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const t = await ticketable(q);
+      assert.ok(t, "the seed has a ticketable passenger");
+      const [{ id }] = await q(ISSUE, [t.booking_id, t.passenger_id, t.pnr_id, "1761234500001", "CNS-48213"]);
+      const [k] = await q("select number_source, supplier_reference from tickets where id = $1", [id]);
+      assert.deepEqual(k, { number_source: "Manual from supplier document", supplier_reference: "CNS-48213" });
+      const [e] = await q("select body from booking_events where booking_id = $1 order by created_at desc limit 1", [t.booking_id]);
+      assert.match(e.body, /^Ticket 1761234500001 issued by EK for .+ — supplier ref CNS-48213$/);
+    });
+  });
+
+  it("the existing call without a reference still works (reference left empty)", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const t = await ticketable(q);
+      const [{ id }] = await q("select issue_ticket($1, $2, $3, '1761234500002', 'EK', 500, 80, now()) as id", [t.booking_id, t.passenger_id, t.pnr_id]);
+      const [k] = await q("select number_source, supplier_reference from tickets where id = $1", [id]);
+      assert.deepEqual(k, { number_source: "Manual from supplier document", supplier_reference: null });
+    });
+  });
+
+  it("an invalid supplier reference is refused", async () => {
+    await asUser(db, USERS.leo.id, async (q) => {
+      const t = await ticketable(q);
+      for (const bad of ["ref;drop table", "-starts-with-dash", "x".repeat(61), "émoji✈"]) {
+        await q.fails(ISSUE, [t.booking_id, t.passenger_id, t.pnr_id, "1761234500003", bad], /supplier reference can have up to 60/);
+      }
+    });
+  });
+
+  it("staff can never record or change a source: only the supplier connection may record 'Supplier API'", async () => {
+    await asUser(db, USERS.aisha.id, async (q) => {
+      await q.fails("update tickets set number_source = 'Supplier API'", [], /permission denied/);
+      await q.fails("update tickets set supplier_reference = 'X'", [], /permission denied/);
+    });
+    await asOwner(db, async (q) => {
+      const t = await ticketable(q);
+      const [k] = await q(
+        `insert into tickets (organization_id, booking_id, passenger_id, pnr_id, ticket_number, issuing_airline, base_fare, taxes, number_source, supplier_reference)
+         values ($1, $2, $3, $4, '1761234500004', 'EK', 500, 80, 'Supplier API', 'AMA-TKT-77') returning number_source`,
+        [ORG, t.booking_id, t.passenger_id, t.pnr_id],
+      );
+      assert.equal(k.number_source, "Supplier API");
+    });
+  });
+
+  it("source and supplier reference are frozen with the other issued details; status changes still work", async () => {
+    await asOwner(db, async (q) => {
+      const [{ def }] = await q("select pg_get_functiondef('private.guard_ticket()'::regprocedure) def");
+      assert.match(def, /new\.issued_by, new\.number_source, new\.supplier_reference\)\s+is distinct from/);
+      assert.match(def, /new\.number_source := 'Manual from supplier document';/);
+    });
+    await asUser(db, USERS.leo.id, async (q) => {
+      const t = await ticketable(q);
+      const [{ id }] = await q(ISSUE, [t.booking_id, t.passenger_id, t.pnr_id, "1761234500005", "REF-1"]);
+      await q("select change_ticket_status($1, 'Voided', 'Name misspelt, voided same day')", [id]);
+      const [k] = await q("select status, number_source, supplier_reference from tickets where id = $1", [id]);
+      assert.deepEqual(k, { status: "Voided", number_source: "Manual from supplier document", supplier_reference: "REF-1" });
+    });
+  });
+
+  it("only one issue_ticket exists (no ambiguous old version) and visitors can't call it", async () => {
+    await asOwner(db, async (q) => {
+      const fns = await q("select pg_get_function_identity_arguments(p.oid) args from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'issue_ticket'");
+      assert.equal(fns.length, 1);
+      assert.match(fns[0].args, /p_supplier_reference text$/);
+      const [g] = await q("select has_function_privilege('anon', 'public.issue_ticket(uuid, uuid, uuid, text, text, numeric, numeric, timestamptz, text)', 'execute') anon");
+      assert.equal(g.anon, false);
     });
   });
 });

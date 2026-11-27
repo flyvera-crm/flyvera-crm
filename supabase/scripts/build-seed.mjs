@@ -208,18 +208,12 @@ const tasks = leads
 insert("tasks",["id", "organization_id", "title", "details", "due_at", "status", "priority", "assigned_to", "created_by", "lead_id", "booking_id"], tasks);
 
 // 6 · Flight search & offers ---------------------------------------------------------------
-sql("-- 6 · A flight search with two offers ---------------------------------------------");
+// No flight offers: fares and availability come only from an authorised supplier connection (migration 24),
+// so the development seed never contains offers (they would be invented fares).
+sql("-- 6 · A flight search (no offers: those come only from a supplier connection) -----");
 const SEARCH = uid("search:LD-2060");
 insert("flight_searches", ["id", "organization_id", "created_by", "lead_id", "origin", "destination", "depart_on", "return_on", "adults", "cabin", "provider", "searched_at"], [
   [SEARCH, ORG, USERS.daniel.id, leadId("LD-2060"), "LHR", "HND", "2027-04-02", "2027-04-14", 2, "Economy", "Manual", "2026-11-19T10:15:00Z"],
-]);
-insert("flight_offers", ["id", "organization_id", "search_id", "provider", "provider_offer_id", "validating_carrier", "base_amount", "tax_amount", "currency", "itinerary", "expires_at", "is_selected"], [
-  [uid("offer:1"), ORG, SEARCH, "Manual", "JL-LHR-HND-1", "JL", 2_420, 760, "USD",
-    [{ from: "LHR", to: "HND", flight: "JL44", departs: "2027-04-02T11:35:00Z" }, { from: "HND", to: "LHR", flight: "JL43", departs: "2027-04-14T02:10:00Z" }],
-    "2026-11-26T00:00:00Z", true],
-  [uid("offer:2"), ORG, SEARCH, "Manual", "BA-LHR-HND-1", "BA", 2_180, 820, "USD",
-    [{ from: "LHR", to: "HND", flight: "BA5", departs: "2027-04-02T13:05:00Z" }, { from: "HND", to: "LHR", flight: "BA8", departs: "2027-04-14T05:30:00Z" }],
-    "2026-11-26T00:00:00Z", false],
 ]);
 
 // 7 · Quotations + items -----------------------------------------------------------------------

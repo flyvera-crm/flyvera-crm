@@ -278,6 +278,11 @@ export function TicketingPanel({ booking, data, today }: { booking: Booking; dat
                     </p>
                     <p className="text-xs text-navy-400">
                       {t.airline} · issued {formatDate(t.issuedAt)} · {formatMoney(t.total)} ({formatMoney(t.baseFare)} + {formatMoney(t.taxes)} tax)
+                      {" · "}
+                      <span title={t.supplierReference ? `Supplier reference ${t.supplierReference}` : undefined}>
+                        {t.numberSource === "Supplier API" ? "from supplier connection" : "copied from supplier e-ticket"}
+                        {t.supplierReference && <> · ref {t.supplierReference}</>}
+                      </span>
                       {t.voidedAt && <> · voided {formatDate(t.voidedAt)}</>}
                     </p>
                   </div>

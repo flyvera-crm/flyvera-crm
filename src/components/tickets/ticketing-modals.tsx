@@ -525,6 +525,7 @@ export function IssueTicketModal({
     baseFare: "",
     taxes: "",
     issuedOn: today,
+    supplierReference: "",
     confirmed: false,
   });
   const errors = validateTicket(v, today, bookingCreated);
@@ -537,7 +538,7 @@ export function IssueTicketModal({
       open
       onClose={onClose}
       title="Record issued ticket"
-      description="Enter the ticket exactly as the airline or GDS issued it. Recording it here doesn't issue anything."
+      description="Copy the ticket exactly from the airline's or consolidator's e-ticket. Recording it here doesn't issue anything."
       footer={<Footer formId="ticket-form" saving={saving} label="Record ticket" onClose={onClose} />}
     >
       <form id="ticket-form" onSubmit={(e) => submit(e, v, Object.keys(errors).length > 0)} noValidate className="grid grid-cols-2 gap-4">
@@ -576,6 +577,13 @@ export function IssueTicketModal({
         <Field id="tktTaxes" label="Taxes (USD)" error={err("taxes")} className="col-span-1">
           <input id="tktTaxes" value={v.taxes} inputMode="decimal" onChange={(e) => set({ taxes: e.target.value })} placeholder="0" className={inputClass(!!err("taxes"))} />
         </Field>
+        <Field id="tktSupplierRef" label="Supplier reference" error={err("supplierReference")} hint="Optional, e.g. the consolidator's booking reference." className="col-span-2 sm:col-span-1">
+          <input id="tktSupplierRef" value={v.supplierReference} maxLength={60} onChange={(e) => set({ supplierReference: e.target.value })} className={inputClass(!!err("supplierReference"))} />
+        </Field>
+        <div className="col-span-2 sm:col-span-1">
+          <p className="text-sm font-medium text-navy-700">Source</p>
+          <p className="mt-2 text-sm text-navy-600" data-testid="ticket-source">Manual from supplier document</p>
+        </div>
         <div className="col-span-2">
           <label
             className={cn(
@@ -591,8 +599,8 @@ export function IssueTicketModal({
               className="mt-0.5 size-4 shrink-0 accent-navy-900"
             />
             <span className="text-navy-700">
-              I confirm this ticket number was <span className="font-semibold">issued by the airline or GDS</span> and matches the ticket
-              document.
+              I copied this ticket number from the <span className="font-semibold">airline&apos;s or consolidator&apos;s e-ticket</span>, and
+              the details match that document.
             </span>
           </label>
           {err("confirmed") && <p className="mt-1.5 text-xs font-medium text-rose-600">{err("confirmed")}</p>}

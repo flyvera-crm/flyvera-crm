@@ -224,9 +224,14 @@ export type TicketFormValues = {
   baseFare: string;
   taxes: string;
   issuedOn: string;
-  /** The agent confirms the number was issued by the airline / GDS (never assumed). */
+  /** Optional: the consolidator's booking reference or e-ticket receipt number. */
+  supplierReference: string;
+  /** The agent confirms the number was copied from the airline's / consolidator's e-ticket (never assumed). */
   confirmed: boolean;
 };
+
+/** Same pattern as the database (migration 24). */
+export const SUPPLIER_REFERENCE_RE = /^[A-Za-z0-9][A-Za-z0-9 /._-]{0,59}$/;
 
 export const cleanTicketNumber = (s: string) => s.replace(/[\s-]/g, "");
 const amount = (s: string) => Number(s.replace(/[,\s$]/g, ""));
@@ -244,7 +249,9 @@ export function validateTicket(v: TicketFormValues, today: string, bookingCreate
   if (!DATE_RE.test(v.issuedOn)) e.issuedOn = "Enter the issue date.";
   else if (v.issuedOn > today) e.issuedOn = "The issue date can't be in the future.";
   else if (v.issuedOn < bookingCreated) e.issuedOn = "That's before the booking was created.";
-  if (!v.confirmed) e.confirmed = "Confirm the ticket was issued by the airline or GDS.";
+  const ref = v.supplierReference.trim();
+  if (ref && !SUPPLIER_REFERENCE_RE.test(ref)) e.supplierReference = "Up to 60 letters, digits, spaces and / . _ -";
+  if (!v.confirmed) e.confirmed = "Confirm you copied the number from the airline's or consolidator's e-ticket.";
   return e;
 }
 

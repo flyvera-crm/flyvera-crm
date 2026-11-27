@@ -188,13 +188,9 @@ insert into public.tasks (id, organization_id, title, details, due_at, status, p
   ('3f59e322-a308-44c7-8458-2e9910a9813a', '11111111-1111-4111-8111-111111111111', 'Follow up with Oliver Grant', 'Maldives · Negotiation', '2026-11-21T09:00:00Z', 'Open', 'High', 'a0000000-0000-4000-8000-000000000003', 'a0000000-0000-4000-8000-000000000003', 'fb344e91-4cf7-4684-a6ba-b168043baad3', null),
   ('e1eb98e2-fe57-4a36-b783-83f2fac9b3f3', '11111111-1111-4111-8111-111111111111', 'Follow up with Mariam Yusuf', 'Istanbul · Negotiation', '2026-11-23T09:00:00Z', 'Open', 'Normal', 'a0000000-0000-4000-8000-000000000005', 'a0000000-0000-4000-8000-000000000005', '720f9030-e069-4951-8342-3b559eff7701', null);
 
--- 6 · A flight search with two offers ---------------------------------------------
+-- 6 · A flight search (no offers: those come only from a supplier connection) -----
 insert into public.flight_searches (id, organization_id, created_by, lead_id, origin, destination, depart_on, return_on, adults, cabin, provider, searched_at) values
   ('51f78fb9-35d3-4342-a0e0-33d87b18d34e', '11111111-1111-4111-8111-111111111111', 'a0000000-0000-4000-8000-000000000004', '563aa444-133e-4632-9cd8-dfe9c63f7f97', 'LHR', 'HND', '2027-04-02', '2027-04-14', 2, 'Economy', 'Manual', '2026-11-19T10:15:00Z');
-
-insert into public.flight_offers (id, organization_id, search_id, provider, provider_offer_id, validating_carrier, base_amount, tax_amount, currency, itinerary, expires_at, is_selected) values
-  ('fd8848b5-b7b4-45dd-a42a-88716ff11c6a', '11111111-1111-4111-8111-111111111111', '51f78fb9-35d3-4342-a0e0-33d87b18d34e', 'Manual', 'JL-LHR-HND-1', 'JL', 2420, 760, 'USD', '[{"from":"LHR","to":"HND","flight":"JL44","departs":"2027-04-02T11:35:00Z"},{"from":"HND","to":"LHR","flight":"JL43","departs":"2027-04-14T02:10:00Z"}]'::jsonb, '2026-11-26T00:00:00Z', true),
-  ('d1404a89-59b0-4ea2-ba70-c2ef030c94e9', '11111111-1111-4111-8111-111111111111', '51f78fb9-35d3-4342-a0e0-33d87b18d34e', 'Manual', 'BA-LHR-HND-1', 'BA', 2180, 820, 'USD', '[{"from":"LHR","to":"HND","flight":"BA5","departs":"2027-04-02T13:05:00Z"},{"from":"HND","to":"LHR","flight":"BA8","departs":"2027-04-14T05:30:00Z"}]'::jsonb, '2026-11-26T00:00:00Z', false);
 
 -- 7 · Quotations (same 8 as the frontend demo) ------------------------------------
 insert into public.quotations (id, organization_id, code, customer_id, lead_id, recipient, title, destination, depart_on, return_on, adults, children, discount, tax_rate, valid_until, status, notes, prepared_by, sent_at, responded_at, created_by, created_at, updated_at) values

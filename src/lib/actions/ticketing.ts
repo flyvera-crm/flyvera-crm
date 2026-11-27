@@ -358,6 +358,7 @@ export async function issueTicket(bookingDbId: unknown, raw: unknown): Promise<A
     baseFare: str(r, "baseFare"),
     taxes: str(r, "taxes"),
     issuedOn: str(r, "issuedOn"),
+    supplierReference: str(r, "supplierReference"),
     confirmed: r.confirmed === true,
   };
   const problem = first(validateTicket(v, today(), booking.created));
@@ -374,6 +375,8 @@ export async function issueTicket(bookingDbId: unknown, raw: unknown): Promise<A
     p_base_fare: Number(v.baseFare.replace(/[,\s$]/g, "")),
     p_taxes: v.taxes.trim() ? Number(v.taxes.replace(/[,\s$]/g, "")) : 0,
     p_issued_at: issuedAt,
+    // The database records the source as "Manual from supplier document" (staff never choose it).
+    p_supplier_reference: v.supplierReference.trim() || null,
   });
   if (error?.code === "23505") return { ok: false, message: "This ticket number is already recorded." };
   if (error) return { ok: false, message: friendly(error, "record this ticket") };

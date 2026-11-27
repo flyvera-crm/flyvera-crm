@@ -21,6 +21,7 @@ import type {
   TicketDocument,
   TicketDocumentKind,
   TicketingAccess,
+  TicketNumberSource,
   TicketStatus,
   TravelDocumentType,
 } from "@/types/ticketing";
@@ -54,7 +55,7 @@ const PASSENGER_COLUMNS =
   "document_issuing_country, document_expiry_on, frequent_flyer, meal_preference, special_assistance, is_lead_passenger, created_at, " +
   "customer:customers!passengers_customer_id_organization_id_fkey(code)";
 const TICKET_COLUMNS =
-  "id, booking_id, ticket_number, issuing_airline, status, base_fare, taxes, total, currency, issued_at, voided_at, passenger_id, pnr_id, " +
+  "id, booking_id, ticket_number, issuing_airline, status, base_fare, taxes, total, currency, issued_at, voided_at, passenger_id, pnr_id, number_source, supplier_reference, " +
   "passenger:passengers!tickets_passenger_id_organization_id_fkey(first_name, last_name)";
 
 type One<T> = T | T[] | null;
@@ -95,6 +96,8 @@ export type TicketRow = {
   voided_at: string | null;
   passenger_id: string;
   pnr_id: string | null;
+  number_source: TicketNumberSource | null;
+  supplier_reference: string | null;
   passenger: One<{ first_name: string; last_name: string }>;
 };
 
@@ -134,6 +137,8 @@ export const mapTicket = (t: TicketRow): Ticket => {
     passengerId: t.passenger_id,
     passengerName: p ? `${p.first_name} ${p.last_name}` : "Passenger",
     pnrId: t.pnr_id ?? undefined,
+    numberSource: t.number_source ?? "Manual from supplier document",
+    supplierReference: t.supplier_reference ?? undefined,
   };
 };
 

@@ -74,6 +74,9 @@ export type Segment = {
   status: SegmentStatus;
 };
 
+/** Where a ticket number came from (migration 24). Staff always record the manual source. */
+export type TicketNumberSource = "Manual from supplier document" | "Supplier API";
+
 export type Ticket = {
   id: string;
   ticketNumber: string;
@@ -88,6 +91,9 @@ export type Ticket = {
   passengerId: string;
   passengerName: string;
   pnrId?: string;
+  numberSource: TicketNumberSource;
+  /** e.g. the consolidator's booking reference or e-ticket receipt number (optional). */
+  supplierReference?: string;
 };
 
 export type TicketDocument = {
