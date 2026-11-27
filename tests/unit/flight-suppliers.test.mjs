@@ -63,8 +63,11 @@ describe("no live supplier is connected, and none is faked", () => {
     }
   });
 
-  it("the Flights menu item stays marked as planned", () => {
-    assert.match(read("src/config/navigation.ts"), /label: "Flights", href: "\/flights",[^}]*planned: true/);
+  it("the Flights menu item is shown (not planned) and promises no live fares", () => {
+    const line = read("src/config/navigation.ts").match(/\{ label: "Flights", href: "\/flights",[^}]*\}/)?.[0];
+    assert.ok(line, "Flights menu item exists");
+    assert.doesNotMatch(line, /planned: true/);
+    assert.match(line, /No live fares until a supplier is connected/);
   });
 });
 

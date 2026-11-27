@@ -9,15 +9,15 @@ import { invoiceSource, invoiceTitle, settingsFromRow } from "@/lib/settings-rul
 describe("navigation", () => {
   it("leaves planned modules out of the sidebar, but their 'coming soon' pages still work", () => {
     const shown = sidebarSections.flatMap((s) => s.items.map((i) => i.href));
-    for (const href of ["/whatsapp", "/ai-assistant", "/flights"]) {
+    for (const href of ["/whatsapp", "/ai-assistant"]) {
       assert.ok(!shown.includes(href), `${href} hidden`);
       assert.equal(getNavItem(href).planned, true, `${href} still has its placeholder entry`);
     }
-    for (const href of ["/dashboard", "/customers", "/leads", "/quotations", "/bookings", "/tickets", "/payments", "/invoices", "/suppliers", "/reports", "/team", "/settings"]) {
+    for (const href of ["/dashboard", "/customers", "/leads", "/flights", "/quotations", "/bookings", "/tickets", "/payments", "/invoices", "/suppliers", "/reports", "/team", "/settings"]) {
       assert.ok(shown.includes(href), `${href} shown`);
     }
     assert.ok(sidebarSections.every((s) => s.items.length > 0), "no empty sections");
-    assert.equal(allNavItems.filter((i) => i.planned).length, 3);
+    assert.equal(allNavItems.filter((i) => i.planned).length, 2);
   });
 });
 

@@ -37,7 +37,7 @@ export const navSections: NavSection[] = [
   {
     title: "Operations",
     items: [
-      { label: "Flights", href: "/flights", icon: "plane", description: "Search fares, manage PNRs and monitor schedule changes.", planned: true },
+      { label: "Flights", href: "/flights", icon: "plane", description: "Turn trip requests into flight searches with AI. No live fares until a supplier is connected." },
       { label: "Quotations", href: "/quotations", icon: "document", description: "Build, send and track travel quotations." },
       { label: "Bookings", href: "/bookings", icon: "calendar", description: "All confirmed trips — flights, hotels and packages." },
       { label: "Tickets", href: "/tickets", icon: "ticket", description: "Issued e-tickets, reissues, refunds and voids." },
