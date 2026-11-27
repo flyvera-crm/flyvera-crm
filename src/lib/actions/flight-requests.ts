@@ -17,20 +17,20 @@ import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser, type AppRole } from "@/lib/auth";
 import { parseFlightRequest, READER_VERSION } from "@/lib/flight-request-parser";
 import {
-  CABINS,
   DAILY_LIMIT,
+  draftFromInput,
   draftFromReading,
   requestTextProblem,
   searchRow,
   validateDraft,
-  type Cabin,
+  type DraftErrors,
   type FlightRequestDraft,
 } from "@/lib/flight-request";
 
 export type ReadResult =
   | { ok: true; actionId: string; draft: FlightRequestDraft; questions: string[]; remaining: number }
   | { ok: false; message: string; remaining?: number };
-export type SaveResult = { ok: true; message: string } | { ok: false; message: string; fieldErrors?: Partial<Record<keyof FlightRequestDraft, string>> };
+export type SaveResult = { ok: true; message: string } | { ok: false; message: string; fieldErrors?: DraftErrors };
 
 /** Same roles that may create flight searches (RLS, migration 10). */
 const ALLOWED: AppRole[] = ["admin", "sales_manager", "sales_agent", "ticketing_agent"];
@@ -139,21 +139,7 @@ export async function saveFlightRequest(actionId: unknown, raw: unknown, link: u
     return { ok: false, message: "That reading couldn't be found." };
   if (action.status !== "Proposed") return { ok: false, message: "This reading was already saved or discarded." };
 
-  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const s = (k: keyof FlightRequestDraft) => (typeof r[k] === "string" ? (r[k] as string) : "");
-  const v: FlightRequestDraft = {
-    origin: s("origin"),
-    destination: s("destination"),
-    departOn: s("departOn"),
-    returnOn: s("returnOn"),
-    adults: s("adults"),
-    children: s("children"),
-    infants: s("infants"),
-    cabin: (CABINS as readonly string[]).includes(s("cabin")) ? (s("cabin") as Cabin) : ("" as Cabin),
-    preferredAirlines: s("preferredAirlines"),
-    budgetAmount: s("budgetAmount"),
-    budgetCurrency: s("budgetCurrency") || "USD",
-  };
+  const v = draftFromInput(raw);
   const fieldErrors = validateDraft(v, todayUtc());
   if (Object.keys(fieldErrors).length) return { ok: false, message: "Some details need attention.", fieldErrors };
 
@@ -175,7 +161,7 @@ export async function saveFlightRequest(actionId: unknown, raw: unknown, link: u
   refresh();
   return {
     ok: true,
-    message: `Saved ${row.origin} → ${row.destination}. Not searched: no live flight supplier is connected, so no fares or availability are shown.`,
+    message: `Saved ${[row, ...row.request.further_legs].map((l) => `${l.origin} → ${l.destination}`).join(", ")}${row.return_on ? " (return)" : ""}. Not searched: no live flight supplier is connected, so no fares or availability are shown.`,
   };
 }
 

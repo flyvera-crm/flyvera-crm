@@ -3,10 +3,23 @@
 // "Describe the trip": the request reader (on our own server, no AI service) turns the agent's words into
 // search details that the AGENT reviews, edits and approves before anything is saved. No fares, prices or
 // availability are shown here (only the budget the agent typed). Customer details are linked, never typed.
-import { useState, useTransition } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { discardFlightRequest, readFlightRequest, saveFlightRequest } from "@/lib/actions/flight-requests";
 import { callAction } from "@/lib/action-call";
-import { CABINS, DAILY_LIMIT, MAX_REQUEST_CHARS, validateDraft, type FlightRequestDraft } from "@/lib/flight-request";
+import {
+  BAGGAGE,
+  CABINS,
+  DAILY_LIMIT,
+  FARE_RULES,
+  MAX_EXTRA_LEGS,
+  MAX_REQUEST_CHARS,
+  STOPS,
+  TIME_SLOTS,
+  TRIP_TYPES,
+  validateDraft,
+  type FlightRequestDraft,
+  type Leg,
+} from "@/lib/flight-request";
 import { useCustomers } from "@/components/customers/CustomersProvider";
 import { useLeadList } from "@/lib/lead-store";
 import { useToast } from "@/components/ui/Toast";
@@ -120,25 +133,75 @@ export function FlightRequestPanel({ initialRemaining, today }: { initialRemaini
                   ))}
                 </ul>
               )}
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Section title="Route and dates">
+                <Choice id="frTripType" label="Trip" v={draft.tripType} options={TRIP_TYPES} error={err("tripType")}
+                  on={(x) => set({ tripType: x as FlightRequestDraft["tripType"], ...(x !== "Return" ? { returnOn: "", returnTime: "" } : {}), ...(x !== "Multi-city" ? { legs: [] } : {}) })} />
                 <Text id="frOrigin" label="From" v={draft.origin} on={(x) => set({ origin: x })} error={err("origin")} upper />
                 <Text id="frDestination" label="To" v={draft.destination} on={(x) => set({ destination: x })} error={err("destination")} upper />
                 <Text id="frDepart" label="Departure" type="date" v={draft.departOn} on={(x) => set({ departOn: x })} error={err("departOn")} />
-                <Text id="frReturn" label="Return (optional)" type="date" v={draft.returnOn} on={(x) => set({ returnOn: x })} error={err("returnOn")} />
-                <Text id="frAdults" label="Adults" v={draft.adults} on={(x) => set({ adults: x })} error={err("adults")} />
+                {draft.tripType === "Return" && <Text id="frReturn" label="Return" type="date" v={draft.returnOn} on={(x) => set({ returnOn: x })} error={err("returnOn")} />}
+                <Choice id="frFlex" label="Date flexibility" v={draft.flexibleDays} error={err("flexibleDays")} on={(x) => set({ flexibleDays: x })}
+                  options={["", "0", "1", "2", "3", "7"]} labels={{ "": "Not stated", "0": "Exact dates", "1": "± 1 day", "2": "± 2 days", "3": "± 3 days", "7": "± 7 days" }} />
+              </Section>
+              {draft.tripType === "Multi-city" && (
+                <div className="space-y-2" aria-label="Further flights">
+                  {draft.legs.map((l, i) => (
+                    <LegRow key={i} n={i + 2} leg={l} on={(patch) => set({ legs: draft.legs.map((x, j) => (j === i ? { ...x, ...patch } : x)) })} remove={() => set({ legs: draft.legs.filter((_, j) => j !== i) })} />
+                  ))}
+                  {err("legs") && <p className="text-xs font-medium text-rose-600">{err("legs")}</p>}
+                  {draft.legs.length < MAX_EXTRA_LEGS && (
+                    <button type="button" onClick={() => set({ legs: [...draft.legs, { origin: draft.legs.at(-1)?.destination ?? draft.destination, destination: "", departOn: "" }] })} className="rounded-lg border border-navy-100 px-3 py-1.5 text-sm font-medium text-navy-700 hover:bg-navy-50">
+                      Add a flight
+                    </button>
+                  )}
+                </div>
+              )}
+              <Section title="Passengers and cabin">
+                <Text id="frAdults" label="Adults (12+)" v={draft.adults} on={(x) => set({ adults: x })} error={err("adults")} />
                 <Text id="frChildren" label="Children (2–11)" v={draft.children} on={(x) => set({ children: x })} error={err("children")} />
                 <Text id="frInfants" label="Infants (under 2)" v={draft.infants} on={(x) => set({ infants: x })} error={err("infants")} />
-                <Field id="frCabin" label="Cabin" error={err("cabin")}>
-                  <select id="frCabin" value={draft.cabin} onChange={(e) => set({ cabin: e.target.value as FlightRequestDraft["cabin"] })} className={inputClass(!!err("cabin"), "h-11")}>
-                    {CABINS.map((c) => (
-                      <option key={c}>{c}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Text id="frAirlines" label="Preferred airlines" v={draft.preferredAirlines} on={(x) => set({ preferredAirlines: x })} error={err("preferredAirlines")} upper wide />
+                <Choice id="frCabin" label="Cabin" v={draft.cabin} options={CABINS} error={err("cabin")} on={(x) => set({ cabin: x as FlightRequestDraft["cabin"] })} />
+              </Section>
+              <Section title="Connections and times">
+                <Choice id="frStops" label="Stops" v={draft.stops} options={STOPS} labels={{ "": "Not stated" }} error={err("stops")} on={(x) => set({ stops: x as FlightRequestDraft["stops"] })} />
+                <Text id="frVia" label="Connect via" v={draft.via} on={(x) => set({ via: x })} error={err("via")} upper />
+                <Text id="frConnection" label="Max connection (hours)" v={draft.maxConnectionHours} on={(x) => set({ maxConnectionHours: x })} error={err("maxConnectionHours")} />
+                <Text id="frAirlines" label="Preferred airlines" v={draft.preferredAirlines} on={(x) => set({ preferredAirlines: x })} error={err("preferredAirlines")} upper />
+                <Text id="frDepartTime" label="Departure time" v={draft.departTime} on={(x) => set({ departTime: x })} error={err("departTime")} list="frTimes" />
+                {draft.tripType === "Return" && <Text id="frReturnTime" label="Return time" v={draft.returnTime} on={(x) => set({ returnTime: x })} error={err("returnTime")} list="frTimes" />}
+                <datalist id="frTimes">
+                  {[...TIME_SLOTS.filter(Boolean), "After 18:00", "Before 12:00"].map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+              </Section>
+              <Section title="Baggage, fare conditions and budget">
+                <Choice id="frBaggage" label="Baggage needed" v={draft.baggage} options={BAGGAGE} labels={{ "": "Not stated" }} error={err("baggage")}
+                  on={(x) => set({ baggage: x as FlightRequestDraft["baggage"], ...(x !== "Checked bags" ? { checkedBags: "" } : {}) })} />
+                {draft.baggage === "Checked bags" && <Text id="frBags" label="Checked bags" v={draft.checkedBags} on={(x) => set({ checkedBags: x })} error={err("checkedBags")} />}
+                <Text id="frBagNote" label="Baggage note" v={draft.baggageNote} on={(x) => set({ baggageNote: x })} error={err("baggageNote")} />
                 <Text id="frBudget" label="Budget (your own figure)" v={draft.budgetAmount} on={(x) => set({ budgetAmount: x })} error={err("budgetAmount")} />
                 <Text id="frCurrency" label="Currency" v={draft.budgetCurrency} on={(x) => set({ budgetCurrency: x })} error={err("budgetCurrency")} upper />
-              </div>
+              </Section>
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium text-navy-700">Fare conditions the customer asked for</legend>
+                <div className="flex flex-wrap gap-x-5 gap-y-2">
+                  {FARE_RULES.map((r) => {
+                    const chosen = draft.fareRules.split(",").map((x) => x.trim()).filter(Boolean);
+                    return (
+                      <label key={r} className="flex items-center gap-2 text-sm text-navy-700">
+                        <input type="checkbox" checked={chosen.includes(r)} onChange={(e) => set({ fareRules: (e.target.checked ? [...chosen, r] : chosen.filter((x) => x !== r)).join(", ") })} className="size-4 accent-navy-900" />
+                        {r}
+                      </label>
+                    );
+                  })}
+                </div>
+                {err("fareRules") && <p className="text-xs font-medium text-rose-600">{err("fareRules")}</p>}
+              </fieldset>
+              <Field id="frNotes" label="Other requests (one per line)" error={err("notes")}>
+                <textarea id="frNotes" rows={3} value={draft.notes} onChange={(e) => set({ notes: e.target.value })} className={inputClass(!!err("notes"), "min-h-16 resize-y py-2.5")} />
+              </Field>
+              <p className="text-xs text-navy-400">Baggage and fare conditions are what the customer asked for, not confirmed allowances or rules: those come with a quoted fare.</p>
               <LinkSelect value={link} onChange={setLink} leads={leads} customers={customers} />
               <label className={cn("flex items-start gap-3 rounded-xl border p-3.5 text-sm", submitted && !reviewed ? "border-rose-300 bg-rose-50" : reviewed ? "border-emerald-300 bg-emerald-50/60" : "border-navy-100")}>
                 <input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} className="mt-0.5 size-4 shrink-0 accent-navy-900" />
@@ -163,11 +226,47 @@ export function FlightRequestPanel({ initialRemaining, today }: { initialRemaini
   );
 }
 
-function Text({ id, label, v, on, error, type, upper, wide }: { id: string; label: string; v: string; on: (v: string) => void; error?: string; type?: string; upper?: boolean; wide?: boolean }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <Field id={id} label={label} error={error} className={wide ? "col-span-2" : undefined}>
-      <input id={id} type={type ?? "text"} value={v} onChange={(e) => on(e.target.value)} className={inputClass(!!error, cn("h-11", upper && "uppercase"))} />
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium text-navy-700">{title}</legend>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">{children}</div>
+    </fieldset>
+  );
+}
+
+function Text({ id, label, v, on, error, type, upper, list }: { id: string; label: string; v: string; on: (v: string) => void; error?: string; type?: string; upper?: boolean; list?: string }) {
+  return (
+    <Field id={id} label={label} error={error}>
+      <input id={id} type={type ?? "text"} value={v} list={list} onChange={(e) => on(e.target.value)} className={inputClass(!!error, cn("h-11", upper && "uppercase"))} />
     </Field>
+  );
+}
+
+function Choice({ id, label, v, on, options, labels, error }: { id: string; label: string; v: string; on: (v: string) => void; options: readonly string[]; labels?: Record<string, string>; error?: string }) {
+  return (
+    <Field id={id} label={label} error={error}>
+      <select id={id} value={v} onChange={(e) => on(e.target.value)} className={inputClass(!!error, "h-11")}>
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {labels?.[o] ?? o}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+function LegRow({ n, leg, on, remove }: { n: number; leg: Leg; on: (patch: Partial<Leg>) => void; remove: () => void }) {
+  return (
+    <div className="grid grid-cols-[1fr_1fr_1.4fr_auto] items-end gap-3">
+      <Text id={`frLeg${n}From`} label={`Flight ${n}: from`} v={leg.origin} on={(x) => on({ origin: x })} upper />
+      <Text id={`frLeg${n}To`} label="To" v={leg.destination} on={(x) => on({ destination: x })} upper />
+      <Text id={`frLeg${n}Date`} label="Date" type="date" v={leg.departOn} on={(x) => on({ departOn: x })} />
+      <button type="button" onClick={remove} aria-label={`Remove flight ${n}`} className="mb-1 rounded-lg border border-navy-100 px-3 py-2 text-sm text-navy-700 hover:bg-navy-50">
+        Remove
+      </button>
+    </div>
   );
 }
 

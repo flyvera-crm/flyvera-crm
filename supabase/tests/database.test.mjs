@@ -2121,7 +2121,7 @@ describe("25 · Supplier-safe flight offers and ticket number source (migration 
 // ═════════════════════════════════════════════════════════════════════════════
 describe("26 · AI flight-request readings: logged, limited, no personal data (migration 25)", () => {
   const LOG = `insert into ai_actions (organization_id, action_kind, status, model, input)
-               values ($1, 'Flight request', 'Proposed', 'local-parser-v1', jsonb_build_object('text', $2::text, 'today', '2026-11-27')) returning id`;
+               values ($1, 'Flight request', 'Proposed', 'local-parser-v2', jsonb_build_object('text', $2::text, 'today', '2026-11-27')) returning id`;
   const LIMIT = /Daily limit reached: 50 AI flight-request readings per person per day/;
   const PII = /Remove personal details/;
 

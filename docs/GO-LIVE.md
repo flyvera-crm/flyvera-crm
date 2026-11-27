@@ -261,7 +261,9 @@ values ('<organization id>', 'louispeterlouis00@gmail.com', '<Owner Name>', 'adm
 - [ ] **Flights:** as an admin, sales or ticketing user, the "Describe the trip" panel shows the readings left
       today (50 per person); a typed request with no personal details becomes search details (plus questions
       about anything unclear) to review before saving; a request containing an e-mail address or phone number
-      is refused. A finance or support colleague doesn't see the panel.
+      is refused. A finance or support colleague doesn't see the panel. Also try a multi-city request
+      ("Dubai to London on 15 Jan, then London to Paris on 20 Jan") and one with baggage and fare conditions
+      ("2 x 23kg, refundable, direct"): they are saved as the customer's requests, never as allowances or fares.
 - [ ] Dashboard shows the payment; a support-role colleague sees no amounts.
 - [ ] Response headers on any page include `X-Frame-Options: DENY` and `Strict-Transport-Security` (browser
       dev tools → Network → the page → Headers).

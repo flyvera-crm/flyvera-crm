@@ -145,11 +145,21 @@ Losing this key makes stored passport numbers unreadable: back it up in your pas
 On the Flights page, admins, sales managers, sales agents and ticketing agents (the roles that may create
 flight searches) can type a trip request; the CRM's own reader (`src/lib/flight-request-parser.ts`, no AI
 service, no key, no cost) turns it into search details plus questions about anything missing or unclear,
-which the agent reviews before anything is saved. It never produces fares, availability, PNRs or tickets.
+which the agent reviews before anything is saved. It never produces fares, availability, baggage
+allowances, PNRs or tickets.
+- **What it reads:** about 700 city, airport and country names (`src/lib/travel-codes.ts`) and any IATA
+  code; 230 airlines; one-way, return and multi-city trips (up to 6 flights); adults, children and infants
+  with ages; the four cabins; direct flights, stop limits, connection airports and connection times;
+  international date formats (ISO, day/month, month/day, `15JAN27`, `15.01.`, English, French, Spanish,
+  German, Italian and Portuguese month names), date flexibility and time of day; baggage needs and fare
+  conditions the customer asks for; budget; special requests (meals, seats, assistance) as notes.
+- **Saved:** the first flight fills `flight_searches`' columns; the rest of the customer's request
+  (further flights, flexibility, stops, connections, times, `baggage_requested`,
+  `fare_conditions_requested`, notes, open questions) is kept in `flight_searches.request`. No schema change.
 - **Logged:** every reading is an `ai_actions` row of kind `Flight request` (Proposed → Applied / Rejected,
-  or Failed) with `model = 'local-parser-v1'` and `cost_usd = 0` (readings made earlier by the AI keep
-  `claude-opus-5-5`). `flight_search_id` links the search saved after review; it clears if that search is
-  deleted, and the reading stays logged.
+  or Failed) with `model = 'local-parser-v2'` (`local-parser-v1` for readings from the first version) and
+  `cost_usd = 0` (readings made earlier by the AI keep `claude-opus-5-5`). `flight_search_id` links the
+  search saved after review; it clears if that search is deleted, and the reading stays logged.
 - **Limited:** 50 readings per person per day (UTC), counted in the database one request at a time per
   person, so simultaneous requests can't exceed it.
 - **No personal data:** the logged text (`input.text`) may not contain e-mail addresses, phone or other long
@@ -182,7 +192,7 @@ npm run test:unit
 ```
 Runs the unit tests for the app's pure business rules (dashboard figures, CSV exports, settings, suppliers,
 lead activity, invoice wording, security headers, navigation, PNR verification, flight suppliers, the
-flight-request reader) with Node's test runner — no database needed (213 tests).
+flight-request reader) with Node's test runner — no database needed (237 tests).
 
 ### What PGlite tests do NOT cover
 PGlite is real PostgreSQL, but `supabase/tests/supabase-shim.sql` only imitates Supabase. Not tested:
